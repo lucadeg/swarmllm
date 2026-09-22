@@ -1,5 +1,15 @@
-import { assertEquals, assertThrows } from "jsr:@std/assert";
 import { autoDevStatusSnapshot, normalizeAutoDevJob } from "../../room/autodev.js";
+
+const eq = (actual, expected, message = "mismatch") => {
+  const left = JSON.stringify(actual);
+  const right = JSON.stringify(expected);
+  if (left !== right) throw new Error(`${message}: ${left} != ${right}`);
+};
+const throws = (fn, message = "expected function to throw") => {
+  let didThrow = false;
+  try { fn(); } catch { didThrow = true; }
+  if (!didThrow) throw new Error(message);
+};
 
 Deno.test("accepts bounded non-sensitive planning jobs", () => {
   const job = normalizeAutoDevJob({
@@ -9,19 +19,19 @@ Deno.test("accepts bounded non-sensitive planning jobs", () => {
     sensitivity: "public",
     actionClass: "recommend",
   });
-  assertEquals(job.actionClass, "recommend");
-  assertEquals(job.sensitivity, "public");
+  eq(job.actionClass, "recommend");
+  eq(job.sensitivity, "public");
 });
 
 Deno.test("rejects secret-bearing fields and credential-looking values", () => {
-  assertThrows(() => normalizeAutoDevJob({
+  throws(() => normalizeAutoDevJob({
     jobId: "JOB-SECRET-001",
     prompt: "inspect",
     sensitivity: "public",
     actionClass: "observe",
     api_key: "never",
   }));
-  assertThrows(() => normalizeAutoDevJob({
+  throws(() => normalizeAutoDevJob({
     jobId: "JOB-SECRET-002",
     prompt: "Use Bearer abcdefghijklmnopqrstuvwxyz012345",
     sensitivity: "public",
@@ -30,7 +40,7 @@ Deno.test("rejects secret-bearing fields and credential-looking values", () => {
 });
 
 Deno.test("rejects irreversible execution classes", () => {
-  assertThrows(() => normalizeAutoDevJob({
+  throws(() => normalizeAutoDevJob({
     jobId: "JOB-DEPLOY-001",
     prompt: "Deploy production.",
     sensitivity: "public",
@@ -49,8 +59,8 @@ Deno.test("status is honest about opportunistic compute", () => {
     connectedPeers: 2,
     local: { webgpu: true, gpu: "GPU" },
   });
-  assertEquals(status.availability, "ready");
-  assertEquals(status.persistent, false);
-  assertEquals(status.requiresBrowserPresence, true);
-  assertEquals(status.remoteComputeVerified, false);
+  eq(status.availability, "ready");
+  eq(status.persistent, false);
+  eq(status.requiresBrowserPresence, true);
+  eq(status.remoteComputeVerified, false);
 });
