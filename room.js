@@ -12,7 +12,7 @@ import { aiSample } from "./room/sampling.js";
 import { chatRecipients } from "./room/visibility.js";
 import { MODELS, NEED_GB, MAX_SEQ, MAX_NEW, MIN_ROOM } from "./room/models.js";
 import { makeLink, attachWire, wireReady, sendFrame } from "./room/transport.js";
-import { normalizeAutoDevJob, autoDevStatusSnapshot } from "./room/autodev.js";
+import { normalizeAutoDevJob, autoDevStatusSnapshot, parseAutoJoinParams } from "./room/autodev.js";
 
 // Hidden-state transport (room/transport.js). ?wire=off falls back to PeerJS messages;
 // ?wire=slice uses one sliced channel; ?wire=stripeN spreads slices over N peer connections.
@@ -495,8 +495,19 @@ function copyRoomLink() {
 }
 $("room-badge").addEventListener("click", copyRoomLink);
 {
-  const code = (new URLSearchParams(location.search).get("code") || "").trim().toUpperCase();
-  if (code) $("code-input").value = code;
+  try {
+    const boot = parseAutoJoinParams(location.search);
+    if (boot.code) $("code-input").value = boot.code;
+    if (boot.name) $("name-input").value = boot.name;
+    if (boot.gb != null) $("join-gb").value = String(boot.gb);
+    if (boot.autojoin || boot.autocreate) {
+      // Explicit URL opt-in only. Wake Lock may still require a user gesture,
+      // so unattended workers are opportunistic and browsers may suspend them.
+      queueMicrotask(() => start(boot.autocreate));
+    }
+  } catch (err) {
+    $("join-status").textContent = "auto-start disabled: " + err.message;
+  }
 }
 
 // ================= distributed inference =================
@@ -1332,6 +1343,24 @@ function installAutoDevBridge() {
         connectedPeers: conns.size,
         local: myMeta,
       });
+    },
+    workerLink({ name = "autodev-worker", gb = 1 } = {}) {
+      if (!roomCode) throw new Error("Create a room before generating worker links");
+      const url = new URL(location.href);
+      url.search = "";
+      url.searchParams.set("code", roomCode);
+      url.searchParams.set("autojoin", "1");
+      url.searchParams.set("name", String(name).slice(0, 20));
+      url.searchParams.set("gb", String(Math.min(64, Math.max(1, Number(gb) || 1))));
+      return url.toString();
+    },
+    startModel(model) {
+      if (!isHost) throw new Error("Only the room host can start the swarm model");
+      if (!MODELS[model]) throw new Error("Unknown SwarmLLM model");
+      if (ai.engine || ai.busy) throw new Error("SwarmLLM model is already starting or online");
+      $("ai-model").value = model;
+      aiStartAnywhere();
+      return { accepted: true, model };
     },
     async submit(rawJob) {
       const job = normalizeAutoDevJob(rawJob);
