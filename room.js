@@ -1151,6 +1151,9 @@ async function aiGenerate(textArg, who, askerId = peer.id, autoDevMeta = null) {
     aiStatus("generation failed: " + err.message);
     chatBotEnd("\u26a0 " + err.message, "");
     sendChat({ t: "ai-gendone", stats: "failed: " + err.message }, askerId);   // unlock everyone's send box
+    if (autoDevMeta?.jobId) {
+      document.dispatchEvent(new CustomEvent("swarmllm:autodev-job-error", { detail: { jobId: autoDevMeta.jobId, error: err.message } }));
+    }
   }
   ai.busy = false;
   $("ai-send").disabled = false;
@@ -1336,6 +1339,10 @@ function installAutoDevBridge() {
       if (!ai.engine) throw new Error("SwarmLLM model is not ready");
       if (ai.busy) throw new Error("SwarmLLM is busy");
       const result = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error("SwarmLLM AutoDev job timed out"));
+        }, 180000);
         const onResult = (event) => {
           if (event.detail?.jobId !== job.jobId) return;
           cleanup();
@@ -1347,6 +1354,7 @@ function installAutoDevBridge() {
           reject(new Error(event.detail?.error || "SwarmLLM AutoDev job failed"));
         };
         const cleanup = () => {
+          clearTimeout(timer);
           document.removeEventListener("swarmllm:autodev-job-result", onResult);
           document.removeEventListener("swarmllm:autodev-job-error", onError);
         };
