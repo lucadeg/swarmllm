@@ -1330,6 +1330,27 @@ mascot("Hi! I'm Swarmy. Create a room, or type a friend's code to join one.");
 // weights, credentials, or arbitrary browser automation. AutoDev submits
 // non-sensitive inference jobs and receives an auditable result event.
 function installAutoDevBridge() {
+  const jobs = new Map();
+  const remember = (jobId, patch) => {
+    const current = jobs.get(jobId) || { jobId, state: "unknown" };
+    jobs.set(jobId, { ...current, ...patch, updatedAt: Date.now() });
+  };
+  document.addEventListener("swarmllm:autodev-job-start", (event) => {
+    if (event.detail?.jobId) remember(event.detail.jobId, { state: "running" });
+  });
+  document.addEventListener("swarmllm:autodev-job-result", (event) => {
+    if (event.detail?.jobId) remember(event.detail.jobId, { state: "done", reply: event.detail.reply || "", stats: event.detail.stats || "" });
+  });
+  document.addEventListener("swarmllm:autodev-job-error", (event) => {
+    if (event.detail?.jobId) remember(event.detail.jobId, { state: "error", error: event.detail.error || "unknown error" });
+  });
+
+  const assertDispatchable = () => {
+    if (!isHost) throw new Error("AutoDev jobs must be submitted from the SwarmLLM host browser");
+    if (!ai.engine) throw new Error("SwarmLLM model is not ready");
+    if (ai.busy) throw new Error("SwarmLLM is busy");
+  };
+
   const api = Object.freeze({
     version: "1",
     status() {
@@ -1362,11 +1383,22 @@ function installAutoDevBridge() {
       aiStartAnywhere();
       return { accepted: true, model };
     },
+    dispatch(rawJob) {
+      const job = normalizeAutoDevJob(rawJob);
+      assertDispatchable();
+      remember(job.jobId, { state: "queued" });
+      void aiGenerate(job.prompt, job.label, peer.id, { jobId: job.jobId });
+      return { accepted: true, jobId: job.jobId };
+    },
+    job(jobId) {
+      const id = String(jobId || "").trim();
+      if (!id) throw new Error("jobId is required");
+      const value = jobs.get(id);
+      return value ? { ...value } : null;
+    },
     async submit(rawJob) {
       const job = normalizeAutoDevJob(rawJob);
-      if (!isHost) throw new Error("AutoDev jobs must be submitted from the SwarmLLM host browser");
-      if (!ai.engine) throw new Error("SwarmLLM model is not ready");
-      if (ai.busy) throw new Error("SwarmLLM is busy");
+      assertDispatchable();
       const result = new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           cleanup();
