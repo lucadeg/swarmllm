@@ -35,3 +35,10 @@ AutoDev must keep durable task state, retries, authorization, evidence and relea
 Use trusted room participants only. Do not submit secrets, API tokens, private keys, session cookies, credentialed actions or sensitive private-repository material. SwarmLLM's existing threat model applies: intermediate activations are not encryption and remote compute is not currently attested.
 
 The bridge intentionally exposes no peer transport primitives, no arbitrary JavaScript execution hook and no credential channel.
+
+
+## Zero-server static deployment
+
+The repository includes `.github/workflows/pages.yml` for GitHub Pages. After GitHub Pages is enabled for the repository, a push to `main` or a manual workflow dispatch publishes the static runtime. No inference server is deployed: browsers download the static assets and model shards, then contribute WebGPU compute directly.
+
+On GitHub Pages, use the static `/p2p.html` path because Vercel-specific rewrites are not available. Provider quotas and GitHub's service terms still apply.
