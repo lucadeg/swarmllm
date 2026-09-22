@@ -58,3 +58,16 @@ export function autoDevStatusSnapshot(state) {
     gpu: state.local?.gpu || null,
   });
 }
+
+export function parseAutoJoinParams(search) {
+  const params = search instanceof URLSearchParams ? search : new URLSearchParams(search || "");
+  const code = String(params.get("code") || "").trim().toUpperCase();
+  const name = String(params.get("name") || "").trim().slice(0, 20);
+  const gbRaw = Number(params.get("gb"));
+  const gb = Number.isFinite(gbRaw) ? Math.min(64, Math.max(1, gbRaw)) : null;
+  const autojoin = params.get("autojoin") === "1";
+  const autocreate = params.get("autocreate") === "1";
+  if (autojoin && autocreate) throw new Error("autojoin and autocreate are mutually exclusive");
+  if (autojoin && !code) throw new Error("autojoin requires a room code");
+  return Object.freeze({ code, name, gb, autojoin, autocreate });
+}
