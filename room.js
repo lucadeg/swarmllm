@@ -1334,6 +1334,7 @@ function installAutoDevBridge() {
   const remember = (jobId, patch) => {
     const current = jobs.get(jobId) || { jobId, state: "unknown" };
     jobs.set(jobId, { ...current, ...patch, updatedAt: Date.now() });
+    while (jobs.size > 100) jobs.delete(jobs.keys().next().value);
   };
   document.addEventListener("swarmllm:autodev-job-start", (event) => {
     if (event.detail?.jobId) remember(event.detail.jobId, { state: "running" });
@@ -1403,7 +1404,7 @@ function installAutoDevBridge() {
         const timer = setTimeout(() => {
           cleanup();
           reject(new Error("SwarmLLM AutoDev job timed out"));
-        }, 180000);
+        }, 900000);
         const onResult = (event) => {
           if (event.detail?.jobId !== job.jobId) return;
           cleanup();
