@@ -1,4 +1,4 @@
-import { autoDevStatusSnapshot, normalizeAutoDevJob } from "../../room/autodev.js";
+import { autoDevStatusSnapshot, normalizeAutoDevJob, parseAutoJoinParams } from "../../room/autodev.js";
 
 const eq = (actual, expected, message = "mismatch") => {
   const left = JSON.stringify(actual);
@@ -63,4 +63,17 @@ Deno.test("status is honest about opportunistic compute", () => {
   eq(status.persistent, false);
   eq(status.requiresBrowserPresence, true);
   eq(status.remoteComputeVerified, false);
+});
+
+Deno.test("parses explicit worker autojoin without hidden defaults", () => {
+  const cfg = parseAutoJoinParams("?code=abcd&autojoin=1&name=tablet&gb=6");
+  eq(cfg.code, "ABCD");
+  eq(cfg.autojoin, true);
+  eq(cfg.autocreate, false);
+  eq(cfg.name, "tablet");
+  eq(cfg.gb, 6);
+});
+
+Deno.test("rejects ambiguous auto-start modes", () => {
+  throws(() => parseAutoJoinParams("?code=ABCD&autojoin=1&autocreate=1"));
 });
