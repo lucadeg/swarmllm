@@ -1,0 +1,44 @@
+name: Deploy static SwarmLLM to GitHub Pages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "index.html"
+      - "p2p.html"
+      - "room.js"
+      - "room/**"
+      - "engine/**"
+      - "favicon.svg"
+      - "apple-touch-icon.png"
+      - ".github/workflows/pages.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - name: Prepare static artifact
+        run: |
+          mkdir -p .pages
+          rsync -a             --exclude '.git'             --exclude '.github'             --exclude 'models'             --exclude 'node_modules'             ./ .pages/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .pages
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

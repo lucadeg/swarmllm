@@ -12,6 +12,7 @@ import { aiSample } from "./room/sampling.js";
 import { chatRecipients } from "./room/visibility.js";
 import { MODELS, NEED_GB, MAX_SEQ, MAX_NEW, MIN_ROOM } from "./room/models.js";
 import { makeLink, attachWire, wireReady, sendFrame } from "./room/transport.js";
+import { normalizeAutoDevJob, autoDevStatusSnapshot, parseAutoJoinParams } from "./room/autodev.js";
 
 // Hidden-state transport (room/transport.js). ?wire=off falls back to PeerJS messages;
 // ?wire=slice uses one sliced channel; ?wire=stripeN spreads slices over N peer connections.
@@ -494,8 +495,19 @@ function copyRoomLink() {
 }
 $("room-badge").addEventListener("click", copyRoomLink);
 {
-  const code = (new URLSearchParams(location.search).get("code") || "").trim().toUpperCase();
-  if (code) $("code-input").value = code;
+  try {
+    const boot = parseAutoJoinParams(location.search);
+    if (boot.code) $("code-input").value = boot.code;
+    if (boot.name) $("name-input").value = boot.name;
+    if (boot.gb != null) $("join-gb").value = String(boot.gb);
+    if (boot.autojoin || boot.autocreate) {
+      // Explicit URL opt-in only. Wake Lock may still require a user gesture,
+      // so unattended workers are opportunistic and browsers may suspend them.
+      queueMicrotask(() => start(boot.autocreate));
+    }
+  } catch (err) {
+    $("join-status").textContent = "auto-start disabled: " + err.message;
+  }
 }
 
 // ================= distributed inference =================
@@ -969,7 +981,7 @@ function sendChat(msg, askerId) {
   for (const id of full) sendTo(id, msg);
   if (msg.t !== "ai-token") for (const id of hidden) sendTo(id, { t: msg.t, name: msg.name, stats: msg.stats, hidden: true });
 }
-async function aiGenerate(textArg, who, askerId = peer.id) {
+async function aiGenerate(textArg, who, askerId = peer.id, autoDevMeta = null) {
   const text = (textArg ?? $("ai-prompt").value).trim();
   const asker = who || myName;
   if (!text || ai.busy === "gen" || !ai.engine) return;
@@ -977,6 +989,9 @@ async function aiGenerate(textArg, who, askerId = peer.id) {
   ai.pos = 0;
   broadcastAll({ t: "ai-reset" });
   ai.busy = "gen";
+  if (autoDevMeta?.jobId) {
+    document.dispatchEvent(new CustomEvent("swarmllm:autodev-job-start", { detail: { jobId: autoDevMeta.jobId } }));
+  }
   $("ai-prompt").value = "";
   $("ai-send").disabled = true;
   const V = ai.tok.vocab;
@@ -1138,12 +1153,18 @@ async function aiGenerate(textArg, who, askerId = peer.id) {
     const stats = `${count} tok · ${(count / secs).toFixed(1)} tok/s · ${ai.chain.length + 1} devices${capped ? ` · stopped: context full (${MAX_SEQ} tokens)` : ""}`;
     chatBotEnd(reply, stats);
     sendChat({ t: "ai-gendone", stats }, askerId);
+    if (autoDevMeta?.jobId) {
+      document.dispatchEvent(new CustomEvent("swarmllm:autodev-job-result", { detail: { jobId: autoDevMeta.jobId, reply, stats } }));
+    }
     mascot("Done. Anyone in the room can ask the next one.");
     aiStatus(`ready — prefill ${((t0 - tPre) / 1000).toFixed(1)}s, ${stats}`);
   } catch (err) {
     aiStatus("generation failed: " + err.message);
     chatBotEnd("\u26a0 " + err.message, "");
     sendChat({ t: "ai-gendone", stats: "failed: " + err.message }, askerId);   // unlock everyone's send box
+    if (autoDevMeta?.jobId) {
+      document.dispatchEvent(new CustomEvent("swarmllm:autodev-job-error", { detail: { jobId: autoDevMeta.jobId, error: err.message } }));
+    }
   }
   ai.busy = false;
   $("ai-send").disabled = false;
@@ -1302,3 +1323,116 @@ function aiSubmit() {
 $("ai-send").addEventListener("click", aiSubmit);
 $("ai-prompt").addEventListener("keydown", (e) => { if (e.key === "Enter") aiSubmit(); });
 mascot("Hi! I'm Swarmy. Create a room, or type a friend's code to join one.");
+
+
+// ---- AutoDev browser-compute bridge ---------------------------------------
+// Same-page API only. It deliberately does not expose peer transport, model
+// weights, credentials, or arbitrary browser automation. AutoDev submits
+// non-sensitive inference jobs and receives an auditable result event.
+function installAutoDevBridge() {
+  const jobs = new Map();
+  const remember = (jobId, patch) => {
+    const current = jobs.get(jobId) || { jobId, state: "unknown" };
+    jobs.set(jobId, { ...current, ...patch, updatedAt: Date.now() });
+    while (jobs.size > 100) jobs.delete(jobs.keys().next().value);
+  };
+  document.addEventListener("swarmllm:autodev-job-start", (event) => {
+    if (event.detail?.jobId) remember(event.detail.jobId, { state: "running" });
+  });
+  document.addEventListener("swarmllm:autodev-job-result", (event) => {
+    if (event.detail?.jobId) remember(event.detail.jobId, { state: "done", reply: event.detail.reply || "", stats: event.detail.stats || "" });
+  });
+  document.addEventListener("swarmllm:autodev-job-error", (event) => {
+    if (event.detail?.jobId) remember(event.detail.jobId, { state: "error", error: event.detail.error || "unknown error" });
+  });
+
+  const assertDispatchable = () => {
+    if (!isHost) throw new Error("AutoDev jobs must be submitted from the SwarmLLM host browser");
+    if (!ai.engine) throw new Error("SwarmLLM model is not ready");
+    if (ai.busy) throw new Error("SwarmLLM is busy");
+  };
+
+  const api = Object.freeze({
+    version: "1",
+    status() {
+      return autoDevStatusSnapshot({
+        roomCode,
+        isHost,
+        peerId: peer?.id || null,
+        modelReady: Boolean(ai.engine),
+        busy: ai.busy || null,
+        model: $("ai-model")?.value || null,
+        connectedPeers: conns.size,
+        local: myMeta,
+      });
+    },
+    workerLink({ name = "autodev-worker", gb = 1 } = {}) {
+      if (!roomCode) throw new Error("Create a room before generating worker links");
+      const url = new URL(location.href);
+      url.search = "";
+      url.searchParams.set("code", roomCode);
+      url.searchParams.set("autojoin", "1");
+      url.searchParams.set("name", String(name).slice(0, 20));
+      url.searchParams.set("gb", String(Math.min(64, Math.max(1, Number(gb) || 1))));
+      return url.toString();
+    },
+    startModel(model) {
+      if (!isHost) throw new Error("Only the room host can start the swarm model");
+      if (!MODELS[model]) throw new Error("Unknown SwarmLLM model");
+      if (ai.engine || ai.busy) throw new Error("SwarmLLM model is already starting or online");
+      $("ai-model").value = model;
+      aiStartAnywhere();
+      return { accepted: true, model };
+    },
+    dispatch(rawJob) {
+      const job = normalizeAutoDevJob(rawJob);
+      assertDispatchable();
+      remember(job.jobId, { state: "queued" });
+      void aiGenerate(job.prompt, job.label, peer.id, { jobId: job.jobId });
+      return { accepted: true, jobId: job.jobId };
+    },
+    job(jobId) {
+      const id = String(jobId || "").trim();
+      if (!id) throw new Error("jobId is required");
+      const value = jobs.get(id);
+      return value ? { ...value } : null;
+    },
+    async submit(rawJob) {
+      const job = normalizeAutoDevJob(rawJob);
+      assertDispatchable();
+      const result = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error("SwarmLLM AutoDev job timed out"));
+        }, 900000);
+        const onResult = (event) => {
+          if (event.detail?.jobId !== job.jobId) return;
+          cleanup();
+          resolve(event.detail);
+        };
+        const onError = (event) => {
+          if (event.detail?.jobId !== job.jobId) return;
+          cleanup();
+          reject(new Error(event.detail?.error || "SwarmLLM AutoDev job failed"));
+        };
+        const cleanup = () => {
+          clearTimeout(timer);
+          document.removeEventListener("swarmllm:autodev-job-result", onResult);
+          document.removeEventListener("swarmllm:autodev-job-error", onError);
+        };
+        document.addEventListener("swarmllm:autodev-job-result", onResult);
+        document.addEventListener("swarmllm:autodev-job-error", onError);
+      });
+      void aiGenerate(job.prompt, job.label, peer.id, { jobId: job.jobId });
+      return result;
+    },
+  });
+  Object.defineProperty(window, "SwarmLLMAutoDev", {
+    value: api,
+    configurable: false,
+    writable: false,
+  });
+  document.dispatchEvent(new CustomEvent("swarmllm:autodev-ready", { detail: api.status() }));
+}
+
+installAutoDevBridge();
