@@ -1,0 +1,67 @@
+---
+title: Phones and tablets
+eyebrow: Getting started
+description: What a phone does in a room, how much memory it can give, and how to keep it serving when it holds layers.
+sidebar:
+  label: Phones and tablets
+  order: 5
+---
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+{/*
+Sources (for the fact-checker):
+- room/pledge.js: pledgeRule() (iPhone/iPad 0.5 GB default, max 1 GB, step 0.5; Android by navigator.deviceMemory: 0.5 GB up to 2 GB RAM, 1 GB below 8, 2 GB at 8, 1 GB unknown), afterLoadDeath()
+- room/plan.js: PHONE_COST = 20, phonesToLeaveOut()
+- room/preflight.js: verdict() phone lines (Safari 26 / iOS 26; Android Chrome 121+; secure page)
+- room/compute.js lendNotes() (Auto-Lock, background tab, battery)
+- Measurements (phone vs GB10 speed, iOS tab limit, wake): internals/benchmarks
+*/}
+
+A phone can join any room. Usually it joins to **ask**: it sends questions and reads answers while the computers run the model. A phone alone can't run a model, so start the room on a computer.
+
+## Join from a phone
+
+Scan the room's QR code with the camera, or open the invite link. See [Invite devices](/docs/invite).
+
+You need:
+
+- **iPhone or iPad:** Safari on iOS 26 or later. Older iOS can join to chat.
+- **Android:** Chrome 121 or later.
+
+## Why phones usually only ask
+
+A phone's GPU is much slower than a computer's, and every device the answer passes through adds a Wi-Fi hop. So the room gives layers to the fastest devices first. A phone gets layers only when the computers don't have enough memory. See [How layers are split](/docs/rooms/split).
+
+## How much a phone can give
+
+The browser tab limits it, not the GPU.
+
+<Tabs>
+  <TabItem label="iPhone and iPad">
+    0.5 GB by default, at most 1 GB.
+  </TabItem>
+  <TabItem label="Android">
+    | Phone memory | Most it can give |
+    |---|---|
+    | up to 2 GB | 0.5 GB |
+    | below 8 GB | 1 GB |
+    | 8 GB or more | 2 GB |
+    | not reported | 1 GB |
+  </TabItem>
+</Tabs>
+
+## Keep a phone serving
+
+If your phone does hold layers:
+
+- **Keep the room's tab in front.** A background tab can stall the whole room.
+- **Keep the screen on.** Pooled tries to keep it awake. If it can't, it says so: set Auto-Lock to **Never** on an iPhone, or the screen timeout to its longest on Android.
+- **Plug it in.** Serving drains the battery fast.
+
+## If a phone locks or reloads
+
+- **Back within a minute:** it reconnects and the answer carries on.
+- **Reloaded:** it rejoins under the same name and gets its layers back.
+- **Gone for over a minute:** the room deals its layers to the other devices and keeps going. This is the **Re-deal on its own** setting, on by default.
+
+See [Device drops and recovery](/docs/rooms/recovery) for the details, and [Benchmarks](/docs/internals/benchmarks) for phone speed measurements.

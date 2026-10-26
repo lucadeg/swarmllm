@@ -1,0 +1,268 @@
+<!doctype html><title>engine bench</title><pre id="log"></pre>
+<script type="module">
+// Decode benchmark in a real browser tab (Chrome): same checks as tests/test_moe.js / test_mtp.js.
+// Dense Qwen3 GGUFs (general.architecture "qwen3") run on DenseEngine, with config.json and
+// tokenizer.json read from the model's directory (plain decode only: no draft head).
+// ?prefill=512,4096: after the decode prompts, prefill the repo's own source to each length (solo
+// prefillTokens path, as the room) and decode TOKENS more tokens there; reports tok/s for both.
+// ?pmab=N: prefill tok/s on N tokens with ?prefillmath=... A/B vs the f32 GEMM (before the decode checks).
+// ?opts=<json>: extra engine create options; ?set=<json>: engine fields set after create (A/B switches).
+import { Qwen35Engine, prefillMathFeatures } from "../../engine/qwen35.js";
+import { roomQwen35Options, applyRoomFlags } from "../../engine/preset.js";
+import { makeTokenizer, argmax, DenseEngine } from "../../engine/engine.js";
+import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF, streamEntryToGPU, ggufWeights } from "../../engine/gguf.js";
+const q = new URLSearchParams(location.search), MODEL = q.get("model"), N = +(q.get("tokens") || 40), K = +(q.get("k") || 3), GOLD = JSON.parse(q.get("gold") || "[]");
+const MOEK = q.get("moe") ? (q.get("moe").startsWith("{") ? JSON.parse(q.get("moe")) : q.get("moe")) : undefined;   // moeKernel option: preset name or JSON
+const log = (s) => { document.getElementById("log").textContent += s + "\n"; console.log(s); };
+const readAt = async (off, len) => { const r = await fetch(MODEL, { headers: { Range: `bytes=${off}-${off + len - 1}` } }); return new Uint8Array(await r.arrayBuffer()); };
+async function wcacheEntry(device, info) {
+  const r = await fetch(`/__wcache?model=${encodeURIComponent(MODEL)}&name=${encodeURIComponent(info.name)}`);
+  if (!r.ok) throw new Error(`wcache ${info.name}: HTTP ${r.status} ${await r.text()}`);
+  const kind = r.headers.get("X-Kind"), A = +r.headers.get("X-A"), P = +r.headers.get("X-Pad"), B = +r.headers.get("X-B");
+  if (r.headers.get("X-Shape") !== JSON.stringify(info.shape)) throw new Error(`wcache ${info.name}: shape ${r.headers.get("X-Shape")} != ${JSON.stringify(info.shape)}`);
+  if (kind === "f32" || info.name === "token_embd.weight") {   // small tensors, and the embedding (row lookups on the CPU)
+    const buf = await r.arrayBuffer();
+    if (kind === "f32") return { kind, data: new Float32Array(buf, 0, A / 4) };
+    return { kind, qs: new Uint8Array(buf, 0, A), scales: new Uint32Array(buf, A + P, B / 4), shape: info.shape };
+  }
+  const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
+  device.pushErrorScope("out-of-memory");
+  const qs = device.createBuffer({ size: Math.ceil(A / 4) * 4, usage }), sc = device.createBuffer({ size: Math.ceil(B / 4) * 4, usage });
+  if (await device.popErrorScope()) throw new Error(`GPU out of memory allocating ${info.name}`);
+  const regions = [[0, A, qs], [A + P, B, sc]], STAGE = 8 << 20, stage = new Uint8Array(STAGE);
+  let ri = 0, off = 0, st = 0, pos = 0, sinceSync = 0;
+  const reader = r.body.getReader();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    for (let i = 0; i < value.length && ri < regions.length;) {
+      const [start, len, gb] = regions[ri];
+      if (pos < start) { const k = Math.min(start - pos, value.length - i); i += k; pos += k; continue; }   // alignment pad
+      const k = Math.min(len - off - st, STAGE - st, value.length - i);
+      stage.set(value.subarray(i, i + k), st); st += k; i += k; pos += k;
+      if (st === STAGE || off + st === len) {   // chunks are 4-byte multiples: STAGE, or a region's (4-aligned) tail
+        device.queue.writeBuffer(gb, off, stage.buffer, 0, st);
+        off += st; sinceSync += st; st = 0;
+        if (off === len) { ri++; off = 0; }
+      }
+    }
+    if (sinceSync > 256 << 20) { sinceSync = 0; await device.queue.onSubmittedWorkDone(); }   // bound the GPU process's upload backlog
+  }
+  if (ri !== regions.length) throw new Error(`wcache ${info.name}: short body`);
+  return { kind, shape: info.shape, gpu: { kind, qs, sc } };
+}
+try {
+  // ?prefillmath=f32|f16|sgmatrix (prefill GEMM operand precision, engine/qwen35.js PREFILL_MATH); sgmatrix
+  // requests Chrome's subgroup-matrix + shader-f16 features when the adapter has them, else the engine falls back
+  const PM = q.get("prefillmath") || undefined, SGM = q.get("sgm") ? JSON.parse(q.get("sgm")) : undefined;
+  const ad = await navigator.gpu.requestAdapter(); const device = await ad.requestDevice({ requiredFeatures: [...prefillMathFeatures(ad, PM), ...(q.has("gap") && ad.features.has("timestamp-query") ? ["timestamp-query"] : [])],
+    requiredLimits: { maxBufferSize: ad.limits.maxBufferSize, maxStorageBufferBindingSize: ad.limits.maxStorageBufferBindingSize, ...(PM || q.has("ubatch") ? { maxComputeWorkgroupStorageSize: ad.limits.maxComputeWorkgroupStorageSize } : {}) } });
+  let gpuErrors = 0;
+  device.addEventListener("uncapturederror", (e) => { if (gpuErrors++ < 3) log("GPU ERROR " + e.error?.message?.slice(0, 200)); });
+  if (PM) log(`adapter features: ${[...ad.features].filter((f) => /f16|subgroup/.test(f)).join(", ") || "(no f16 / subgroup features)"}; subgroupMatrixConfigs ${JSON.stringify([...(ad.info?.subgroupMatrixConfigs || [])].map((c) => [c.componentType, c.resultComponentType, c.M, c.N, c.K]))}; subgroup ${ad.info?.subgroupMinSize}..${ad.info?.subgroupMaxSize}`);
+  const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer);
+  const arch = G.meta["general.architecture"], L = G.meta[arch + ".block_count"] - (G.meta[arch + ".nextn_predict_layers"] || 0);
+  const dense = arch !== "qwen35" && arch !== "qwen35moe", dirURL = MODEL.replace(/[^/]+$/, "");
+  const tok = makeTokenizer(dense ? await (await fetch(dirURL + "tokenizer.json")).json() : tokenizerFromGGUF(G.meta));
+  const FILLS = (q.get("prefill") || "").split(",").filter(Boolean).map(Number);
+  // ?ctx=1024,8192,32768: plain and speculative decode tok/s (GPU sampling, greedy) with that many tokens of this
+  // repo's source already in the cache, spec == plain checked; &gap=1 also runs tests/prof/decode_gap.js there.
+  // The context comes from files the engine work does not touch, so A/B runs across branches decode the same tokens.
+  const CTXF = (q.get("ctx") || "").split(",").filter(Boolean).map(Number);
+  const MAXSEQ = Math.max(dense ? 8192 : 512, ...FILLS.map((f) => f + N + 16), ...CTXF.map((f) => f + N + 64), (+q.get("pmab") || 0) + 256);
+  const XOPTS = JSON.parse(q.get("opts") || "{}"), XSET = JSON.parse(q.get("set") || "{}");
+  // stream Q4_0/Q8_0 tensors straight into GPU buffers, as the room does (a 21 GB model does not fit in a tab's JS heap)
+  G.streamEntry = (info) => streamEntryToGPU(device, info, (i) => fetch(MODEL, { headers: { Range: `bytes=${i.byteOffset}-${i.byteOffset + i.byteLength - 1}` } }));
+  // ?wcache=1: take each tensor already converted from serve.mjs's weight cache (the same bytes the
+  // repack below would produce) and write it straight into its GPU buffers; loading only, the
+  // engine and every kernel are unchanged
+  if (q.get("wcache") === "1" && !dense) G.entryCache = { put() {}, get: (info) => wcacheEntry(device, info) };
+  let t0 = performance.now();
+  const weights = dense ? null : await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: true });
+  // draft-side A/B knobs (speed only, the output must not change): draftvocab=N (0 = full head),
+  // dvauto=0 (small head always, no language fallback), mtprefill=0 (one refill submit per row),
+  // predraft=0 (no pre-run of the next step's first draft), batchcols=N, draftchain=0, specfuse=0
+  // wide prefill (engine option prefillUbatch, off by default): ubatch=256 [tile={"BM":64,...}];
+  // prefilllen=N times prefillTokens over N tokens with the wide path off and on (logits compared);
+  // with &prefillall=1 every prefill option (tiled attention, wide GEMM, expert-grouped MoE) off and on;
+  // &prefillseq=1 also compares both with one-token-at-a-time decode
+  const opt = (k, d) => (q.has(k) ? +q.get(k) : d);
+  const eng = dense ? await DenseEngine.create({ device, cfg: await (await fetch(dirURL + "config.json")).json(), layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: MAXSEQ,
+      weights: await ggufWeights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true }), ...XOPTS })
+    : await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: MAXSEQ, vocab: G.tensors["token_embd.weight"]?.shape?.[0],
+    // the room's settings (engine/preset.js), read from this page's query string with the room's own flags
+    // (draftvocab, dvauto, draftchain, specfuse, fuse, kv, moefuse, moednrows, gpusample, argmaxwide); the rest
+    // below are bench-only A/B knobs on top
+    ...roomQwen35Options(q), ...XOPTS,
+    ...(q.has("batchcols") ? { batchCols: +q.get("batchcols"), coopRowsB: +q.get("batchcols") >= 16 ? 1 : 4 } : {}),
+    // (unset: the engine defaults, 256 on the MoE for both; 0: off)
+    // ?moegroup=U: expert-grouped prefill in U-token ubatches (a multiple of batchcols; U <= the prompt length to take effect), ?moegroupuc=8, ?moegrouptiled=0: the exact (slower) grouped kernels
+    moeGroupPrefill: opt("moegroup", undefined), moeGroupUC: opt("moegroupuc", 8), moeGroupTiled: opt("moegrouptiled", 1) !== 0,
+    prefillUbatch: opt("ubatch", undefined), ...(q.get("tile") ? { prefillTile: JSON.parse(q.get("tile")) } : {}),   // ?ubatch=256: wide prefill GEMM
+    ...(q.has("dp4a") ? { prefillDp4a: q.get("dp4a") !== "0" } : {}),   // ?dp4a=1|0: the wide GEMM as int8 dot products (engine option prefillDp4a; unset: the engine default)
+    moeKernel: MOEK, prefillMath: PM, prefillSgm: SGM, adapterInfo: ad.info, ...(q.has("attnptile") ? { attnPrefillTile: q.get("attnptile") !== "0" } : {}), ...(q.has("attnptk") ? { attnPrefillTK: +q.get("attnptk") } : {}) });   // ?attnptile=0: attn_flash for prefill instead of the tiled prefill attention (default: on), &attnptk=N its tile; ?moefuse=0: unfused MoE (A/B); ?moe=legacy|default|JSON: unfused expert GEMV layout
+  // greedy decode: with GPU sampling the head's argmax runs on the GPU (forwardTokenIds, a .gpu sampler for specStep)
+  const GS = !dense && !!eng.gpuSample;
+  const G1 = Object.assign((x) => (x && x.ids instanceof Uint32Array ? x.ids[0] : argmax(x)), { gpu: { kind: "greedy" } });
+  const fwd = (id) => (GS ? eng.forwardTokenIds(id) : eng.forwardToken(id)), pick = GS ? G1 : argmax;
+  applyRoomFlags(eng, q);   // ?mtpbatch=0, ?mtprefill=0, ?predraft=0 as in the room
+  Object.assign(eng, XSET);
+  if (Object.keys(XOPTS).length || Object.keys(XSET).length) log(`opts ${JSON.stringify(XOPTS)} set ${JSON.stringify(XSET)}`);
+  if (PM) log(`prefillMath requested ${PM}, running ${eng.prefillMath}${eng.sgmWhy ? " (" + eng.sgmWhy + ")" : ""}${eng.sgmCfg ? ", sgm " + JSON.stringify(eng.sgmCfg) : ""}, GEMM ${eng.gemmOn ? "on" : "off (needs batchcols=16)"}`);
+  log(`${arch}: loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s${G.entryCache ? " (pre-converted tensors from serve.mjs)" : ""}, mtp ${!!eng.mtp}, adapter ${ad.info?.vendor}, draftVocab ${eng.draftVocab || "off"}, gpuSample ${GS}, argmaxWide ${!!eng.argmaxWide}, refill ${eng.mtpBatchRefill ? "batched" : "per-row"}, predraft ${eng.mtpPreDraft}, layerFuse ${Object.entries(eng.layerFuse || {}).filter(([, v]) => v).map(([k]) => k).join(",") || "off"}`);
+  log(`draftChain ${!!eng.draftChain}, specFuse ${eng.specFuse}, fuseProj ${eng.fuseProj}, moeFuse ${!!eng.moeFuse} R ${eng.moe?.R}, moeKernel ${JSON.stringify(eng.moeK)}, attnPrefillTile ${eng.attnPrefillTile}, moeGroupPrefill ${eng.moeGrpU || "off"}${eng.moeGrpU ? ` UC ${eng.moeGrpUC} tiled ${!!eng.moeGrpTiled}` : ""}${eng.attnPTCfg ? " TK " + eng.attnPTCfg.TK : ""}`);
+  // ?pmab=N: prefill tok/s on an N-token prompt (this page's own source, repeated) before the decode checks,
+  // with ?prefillmath=... A/B'd against the f32 GEMM in the same tab (engine.prefillMath is a runtime switch).
+  // Also reports the next-token logits' relDiff vs the f32 GEMM and whether greedy argmax agrees.
+  if (q.has("pmab")) {
+    const src = await (await fetch(location.pathname)).text(); let pids = tok.encode(src);
+    const NP = +q.get("pmab"); while (pids.length < NP + 1) pids = pids.concat(pids); pids = pids.slice(0, NP + 1);
+    const res = {};
+    for (const pm of [...new Set(["f32", eng.prefillMath])]) {
+      eng.prefillMath = pm;
+      if (eng.mtp) eng.mtpFill = true;
+      for (let rep = 0; rep < 2; rep++) {   // first run warms pipelines up
+        eng.reset(); const t1 = performance.now(); await eng.prefillTokens(pids.slice(0, -1)); const lg = await eng.forwardToken(pids.at(-1));
+        res[pm] = { tps: NP / ((performance.now() - t1) / 1000), lg: Float32Array.from(lg) };
+      }
+      log(`prefill ${NP} tokens, prefillMath ${pm}: ${res[pm].tps.toFixed(1)} tok/s`);
+    }
+    if (res.f32 && eng.prefillMath !== "f32") {
+      const a = res.f32.lg, b = res[eng.prefillMath].lg; let md = 0, sc = 1e-6;
+      for (let i = 0; i < a.length; i++) { md = Math.max(md, Math.abs(a[i] - b[i])); sc = Math.max(sc, Math.abs(a[i])); }
+      log(`prefill logits ${eng.prefillMath} vs f32: relDiff ${(md / sc).toExponential(2)}, argmax ${argmax(a)} vs ${argmax(b)} ${argmax(a) === argmax(b) ? "same" : "DIFFERENT"}`);
+    }
+    eng.prefillMath = PM && eng._pmAvail?.[PM] ? PM : "f32";
+  }
+  const V = tok.vocab, chat = (s) => [V["<|im_start|>"], ...tok.encode("user\n" + s), V["<|im_end|>"], ...tok.encode("\n"), V["<|im_start|>"], ...tok.encode("assistant\n"), V["<think>"], ...tok.encode("\n\n"), V["</think>"], ...tok.encode("\n\n")];
+  const out = [];
+  if (q.has("prefilllen")) {   // prefill speed, wide path off / on, same tokens (this page's own source, repeated)
+    let pids = tok.encode(document.documentElement.outerHTML); while (pids.length < +q.get("prefilllen")) pids = pids.concat(pids);
+    pids = pids.slice(0, +q.get("prefilllen"));
+    const res = {};
+    const ALL = q.get("prefillall") === "1", apt = eng.attnPrefillTile, mg = eng.moeGroup;
+    // legs: "default" (wide off), "wide" (the f32 wide GEMM), "dp4a" (the int8 wide GEMM, when the engine built it)
+    const dp0 = eng.prefillDp4a, legs = [false, ...(eng.ubatch || ALL ? ["wide"] : []), ...(eng.dp4aCfg ? ["dp4a"] : [])];
+    for (const leg of legs) {
+      const wide = !!leg;
+      eng.reset(); eng.prefillWide = wide && !!eng.ubatch; eng.prefillDp4a = leg === "dp4a"; if (eng.mtp) eng.mtpFill = true;
+      if (ALL) { eng.attnPrefillTile = wide && apt; eng.moeGroup = wide && mg; }
+      const t1 = performance.now(); await eng.prefillTokens(pids.slice(0, -1)); const lg = Float32Array.from(await eng.forwardToken(pids.at(-1)));
+      res[leg || "default"] = { tokps: +(pids.length / ((performance.now() - t1) / 1000)).toFixed(1), argmax: argmax(lg), lg };
+    }
+    eng.prefillDp4a = dp0;
+    const relOf = (a, b) => { let md = 0, sc = 1e-6; for (let i = 0; i < a.length; i++) { md = Math.max(md, Math.abs(a[i] - b[i])); sc = Math.max(sc, Math.abs(b[i])); } return +(md / sc).toExponential(2); };
+    if (res.wide) res.relDiff = relOf(res.wide.lg, res.default.lg);
+    if (res.dp4a) res.relDiffDp4a = relOf(res.dp4a.lg, res.default.lg);
+    if (q.get("prefillseq") === "1") {   // &prefillseq=1: both against one-token-at-a-time decode (the batched-prefill baseline)
+      eng.reset(); eng.prefillWide = false; if (ALL) { eng.attnPrefillTile = false; eng.moeGroup = false; } if (eng.mtp) eng.mtpFill = false;
+      let lg = null; for (const id of pids) lg = await eng.forwardToken(id);
+      const seq = Float32Array.from(lg); res.seqArgmax = argmax(seq);
+      for (const k of ["default", "wide", "dp4a"]) if (res[k]) res[k].relDiffSeq = relOf(res[k].lg, seq);
+    }
+    for (const k of ["default", "wide", "dp4a"]) if (res[k]) delete res[k].lg;
+    eng.prefillWide = !!eng.ubatch; if (ALL) { eng.attnPrefillTile = apt; eng.moeGroup = mg; }
+    log("prefill " + JSON.stringify({ tokens: pids.length, ubatch: eng.ubatch, all: ALL, tile: eng.wideCfg, dp4a: eng.dp4aCfg, ...res })); out.push({ prefill: res });
+  }
+  if (CTXF.length) {
+    // a chat turn: the source as the user's message, then a question about it (prose answers, so drafts get accepted)
+    const V = tok.vocab, head = [V["<|im_start|>"], ...tok.encode("user\n")];
+    const tail = [...tok.encode("\n\nExplain what this code does, step by step, in plain English."), V["<|im_end|>"], ...tok.encode("\n"), V["<|im_start|>"], ...tok.encode("assistant\n"), V["<think>"], ...tok.encode("\n\n"), V["</think>"], ...tok.encode("\n\n")];
+    let src = [];
+    for (const f of ["../../room.js", "../../engine/gguf.js", "../../engine/wgsl/base.js", "../../harness/agent.js", "../../room/plan.js", "../../engine/dense.js"]) {
+      src.push(...tok.encode(`\n// file: ${f}\n` + await (await fetch(f)).text())); if (src.length > Math.max(...CTXF)) break; }
+    while (src.length < Math.max(...CTXF)) src = src.concat(src);
+    const { decodeGap } = q.has("gap") ? await import("../prof/decode_gap.js") : {};
+    const measure = async (pre) => {
+      eng.reset(); if (eng.mtp) eng.mtpFill = false; await eng.prefillTokens(pre.slice(0, -1)); let lg = await fwd(pre.at(-1));
+      let next = pick(lg); const gen = [next]; t0 = performance.now();
+      for (let j = 1; j < N; j++) { next = pick(await fwd(next)); gen.push(next); }
+      const plain = (N - 1) / ((performance.now() - t0) / 1000);
+      let spec = null, same = null, acc = "";
+      if (eng.mtp) { eng.reset(); eng.mtpFill = true; eng.mtp.stats = { drafts: 0, accepted: 0 }; await eng.prefillTokens(pre.slice(0, -1)); lg = await fwd(pre.at(-1));
+        next = pick(lg); const sp = [next]; t0 = performance.now(); while (sp.length < N) { for (const x of await eng.specStep(next, pick, K)) sp.push(x); next = sp.at(-1); }
+        spec = (sp.length - 1) / ((performance.now() - t0) / 1000); same = gen.every((x, j) => sp[j] === x); acc = `${eng.mtp.stats.accepted}/${eng.mtp.stats.drafts}`; }
+      return { plain: +plain.toFixed(2), spec: spec && +spec.toFixed(2), acceptance: acc, specIdentical: same, gen };
+    };
+    // &ab=[{...},{...}]: engine fields per arm, set at runtime, measured in alternating order for &rounds=R rounds at every
+    // fill, so both arms share any GPU contention; medians per arm, tokens compared across arms
+    const ARMS = q.has("ab") ? JSON.parse(q.get("ab")) : null, ROUNDS = +(q.get("rounds") || 3);
+    for (const fill of CTXF) {
+      const pre = [...head, ...src.slice(0, fill - head.length - tail.length), ...tail];
+      if (ARMS) {
+        const keep = Object.fromEntries(Object.keys(Object.assign({}, ...ARMS)).map((k) => [k, eng[k]]));
+        const res = ARMS.map(() => ({ plain: [], spec: [] })); let ref = null, sameAll = true;
+        for (let r = 0; r < ROUNDS; r++) for (const a of (r % 2 ? [...ARMS.keys()].reverse() : [...ARMS.keys()])) {
+          Object.assign(eng, ARMS[a]); eng._fwdPre = null;
+          const m = await measure(pre); res[a].plain.push(m.plain); res[a].spec.push(m.spec);
+          if (!ref) ref = m.gen; else sameAll &&= m.gen.every((x, j) => x === ref[j]) && m.specIdentical !== false;
+        }
+        Object.assign(eng, keep);
+        const med = (v) => { const s2 = [...v].sort((x, y) => x - y); return s2[s2.length >> 1]; };
+        const r = { ctx: fill, ab: ARMS.map((arm, a) => ({ arm, plain: med(res[a].plain), spec: med(res[a].spec), all: res[a] })), tokensIdentical: sameAll };
+        out.push(r); log(JSON.stringify(r));
+        continue;
+      }
+      const m = await measure(pre);
+      const r = { ctx: fill, plain: m.plain, spec: m.spec, acceptance: m.acceptance, specIdentical: m.specIdentical, gen: m.gen.slice(0, 8) };
+      out.push(r); log(JSON.stringify(r));
+      if (decodeGap) out.push({ ctx: fill, gap: await decodeGap({ eng, device, prefix: pre, N, K, log }) });
+    }
+    log(`gpuErrors ${gpuErrors}`);
+    window.RESULT = out;
+    throw "done";
+  }
+  // ?lfab=R: decode layer fusion A/B in this tab (engine.layerFuse flipped at runtime, R rounds of alternating
+  // off / on blocks of N tokens after the same prompt), so both arms share the load and any GPU contention
+  if (q.has("lfab") && eng.layerFuse) {
+    const ids = chat("Write a long, detailed essay about the history of computing."), KEYS = Object.keys(eng.layerFuse), keep = { ...eng.layerFuse };
+    const res = { off: [], on: [] }; let ref = null, same = true;
+    for (let r = 0; r < +q.get("lfab"); r++) for (const on of r % 2 ? [true, false] : [false, true]) {
+      for (const k of KEYS) eng.layerFuse[k] = on;
+      eng.reset(); if (eng.mtp) eng.mtpFill = false; await eng.prefillTokens(ids.slice(0, -1));
+      let next = pick(await fwd(ids.at(-1))); const gen = [next];
+      for (let j = 0; j < 4; j++) { next = pick(await fwd(next)); gen.push(next); }
+      const t1 = performance.now();
+      for (let j = 0; j < N; j++) { next = pick(await fwd(next)); gen.push(next); }
+      res[on ? "on" : "off"].push(+(N / ((performance.now() - t1) / 1000)).toFixed(2));
+      if (!ref) ref = gen; else same &&= gen.every((x, j) => x === ref[j]);
+    }
+    Object.assign(eng.layerFuse, keep);
+    const med = (a) => { const s = [...a].sort((x, y) => x - y); return s.length % 2 ? s[s.length >> 1] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2; };
+    const r = { lfab: res, medOff: med(res.off), medOn: med(res.on), gainPct: +((med(res.on) / med(res.off) - 1) * 100).toFixed(1), tokensIdentical: same };
+    out.push(r); log(JSON.stringify(r));
+  }
+  // ?japan=1: also the room's standard `japan` prompt (docs/bench-log.md), no golden
+  const JAPAN = "I am planning a two week trip through Japan in late October with my partner. We land in Tokyo, want three days there, then a day trip to Nikko, then the bullet train to Kyoto for four days with a side trip to Nara, then two nights in Osaka, and we fly home from Osaka. We like food markets, old temples, hiking, and small neighborhood bars, and we want to avoid the most crowded tourist spots where we can. Our budget is moderate, around two hundred dollars a day for the two of us not counting hotels. Please give me a day by day itinerary with one main activity each morning and afternoon, a neighborhood to eat dinner in each night, and tell me which days I should buy a rail pass for and whether it is worth it at all.";
+  for (const [i, prompt] of ["Write the Python code for two sum. Code only.", "Explain what a hash map is in two sentences.", ...(q.get("japan") === "1" ? [JAPAN] : [])].entries()) {
+    const ids = chat(prompt);
+    eng.reset(); if (eng.mtp) eng.mtpFill = false; await eng.prefillTokens(ids.slice(0, -1)); let lg = await fwd(ids.at(-1));
+    let next = pick(lg); const gen = [next]; t0 = performance.now();
+    for (let j = 1; j < N; j++) { lg = await fwd(next); next = pick(lg); gen.push(next); }
+    const plain = (N - 1) / ((performance.now() - t0) / 1000), text = tok.decode(gen), g = GOLD[i] || "", n = Math.min(text.length, g.length);
+    let spec = null, same = null, acc = "";
+    if (eng.mtp) { eng.reset(); eng.mtpFill = true; eng.mtp.stats = { drafts: 0, accepted: 0 }; await eng.prefillTokens(ids.slice(0, -1)); lg = await fwd(ids.at(-1));
+      next = pick(lg); const sp = [next]; t0 = performance.now(); while (sp.length < N) { for (const x of await eng.specStep(next, pick, K)) sp.push(x); next = sp.at(-1); }
+      spec = (sp.length - 1) / ((performance.now() - t0) / 1000); same = gen.every((x, j) => sp[j] === x); acc = `${eng.mtp.stats.accepted}/${eng.mtp.stats.drafts}${eng.draftVocab ? ` (small head ${eng._dvSmall ? "on" : "off"})` : ""}`; }
+    const r = { prompt, plain: +plain.toFixed(2), spec: spec && +spec.toFixed(2), acceptance: acc, specIdentical: same, golden: g ? (n > 20 && text.slice(0, n) === g.slice(0, n)) : null, text: text.slice(0, 90) };
+    out.push(r); log(JSON.stringify(r));
+  }
+  if (FILLS.length) {   // prefill speed and decode speed at a long context
+    let ids = [];
+    for (const f of ["../../engine/qwen35.js", "../../room.js", "../../engine/gguf.js", "../../engine/wgsl/base.js"]) { ids.push(...tok.encode(`\n// file: ${f}\n` + await (await fetch(f)).text())); if (ids.length > Math.max(...FILLS) + 8) break; }
+    while (ids.length < Math.max(...FILLS) + 8) ids = ids.concat(ids);   // 64K fills: the four files are shorter
+    for (const fill of FILLS) {
+      eng.reset(); if (eng.mtp) eng.mtpFill = true;
+      t0 = performance.now();
+      await eng.prefillTokens(ids.slice(0, fill - 1)); let lg = await eng.forwardToken(ids[fill - 1]);
+      const pf = fill / ((performance.now() - t0) / 1000);
+      let next = argmax(lg); const gen = [next]; t0 = performance.now();
+      for (let j = 1; j < N; j++) { lg = await eng.forwardToken(next); next = argmax(lg); gen.push(next); }
+      const r = { fill, prefill: +pf.toFixed(1), decodeAtFill: +((N - 1) / ((performance.now() - t0) / 1000)).toFixed(2), gen: gen.slice(0, 12) };
+      out.push(r); log(JSON.stringify(r));
+    }
+  }
+  log(`gpuErrors ${gpuErrors}`);
+  window.RESULT = out;
+} catch (e) { if (e !== "done") { log("ERROR " + (e.stack || e)); window.RESULT = { error: String(e) }; } }
+</script>

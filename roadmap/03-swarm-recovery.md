@@ -1,6 +1,6 @@
-# 03 · Spare layer copies and swarm recovery
+# 03 · Spare layer copies and room recovery
 
-**Phase:** next · **Status:** planned
+**Phase:** multi-device · **Status:** planned · takes over automatic re-deal on join and leave from 12 (and from PR #46)
 
 ## Why
 A device leaving mid-answer stalls the room. Rooms often have more devices than the model needs; the surplus should buy resilience.

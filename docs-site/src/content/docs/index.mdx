@@ -1,0 +1,68 @@
+---
+title: What is Pooled
+eyebrow: Getting started
+description: Pooled runs one open model across the devices in a room, in browser tabs. Nothing to install, no account, and no server does the thinking.
+sidebar:
+  label: What is Pooled
+  order: 1
+---
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+{/*
+Sources (for the fact-checker):
+- README.md: intro, "How it works", models table, "Code mode", "Use Pooled from your tools", "Privacy"
+- room/models.js: NEED_GB, PICKER
+- room/joingate.js: CODE_LEN = 6, formatCode ("4TK-G9P")
+*/}
+
+Pooled runs one AI model across several devices at once. Your laptop, a friend's desktop and a phone each hold part of the model and run it on their own GPU, in a browser tab. Together they run a model none of them could run alone.
+
+There is nothing to install and no account. The model runs on your devices, not on a server.
+
+## How it works in 30 seconds
+
+1. One device opens [pooled.run/room](https://pooled.run/room) and starts a room. It gets a code like `4TK-G9P`.
+2. Other devices join with the code, a link or a QR code. Each one gives the room some memory.
+3. Someone picks a model and presses **Start the model**. Each device downloads only its part.
+4. Everyone in the room can ask the model questions.
+
+One laptop is enough for the smallest model. More devices let you run bigger ones:
+
+| Model | Memory the room needs |
+|---|---|
+| Qwen3 1.7B | 5.6 GB at a 16K context, 4 GB at 8K |
+| Qwen3.8 27B | 17 GB |
+| Qwen3.6 35B MoE | 22.5 GB |
+| Qwen3.8-Flash-Next (experimental) | about 72 GB on GPUs, or about 8 GB for one tab that keeps its experts on disk (up to 92.4 GB of disk per device) |
+
+## What you can do with a room
+
+<CardGrid>
+  <Card title="Chat">
+    Ask the room's model anything. See [Chat](/docs/chat).
+  </Card>
+  <Card title="Code mode">
+    Ask for a small app. The model writes it and runs it in a preview. See [Code mode](/docs/code).
+  </Card>
+  <Card title="Serve API">
+    Use the room from Codex CLI, Claude Code, opencode or the OpenAI and Anthropic SDKs. See [Serve API](/docs/serve).
+  </Card>
+  <Card title="Terminal">
+    Join or host a room from the command line. See [Terminal](/docs/terminal).
+  </Card>
+</CardGrid>
+
+:::caution[A room is a shared conversation]
+Everyone in a room can see what is asked, unless the host limits it. Run rooms with people you would share a document with. See [Privacy](/docs/privacy).
+:::
+
+## Start here
+
+<CardGrid>
+  <LinkCard title="Start a room" href="/docs/start-a-room" description="Run your first model on one laptop." />
+  <LinkCard title="Invite devices" href="/docs/invite" description="Add a phone, a second laptop or a friend's desktop." />
+</CardGrid>
+
+Want a step-by-step walk-through? The [starter kits](/docs/kits/first-chat) take you through each way to use Pooled: one laptop, two devices, Code mode, coding tools, the terminal and OpenClaw.
+
+Curious how it works under the hood? See [Architecture](/docs/internals/architecture).

@@ -1,0 +1,226 @@
+---
+title: TURN relay
+eyebrow: Self-hosting
+description: When two devices can't connect directly, a TURN relay carries their traffic. pooled.run provides one through /api/turn; here is how to use your own or set one up on your deployment.
+sidebar:
+  label: TURN relay
+  order: 2
+---
+
+{/*
+  Sources (origin/main 40bb0fa):
+  - room/ice.js: STUN list, TURN_KEY "pooled-turn", SECRET_PARAMS, validTurnUrl regex,
+    turnFrom() precedence (URL > saved > window.TURN_SERVERS), iceConfig() relay-only policy, shareQuery() strips relay params
+  - p2p.html ~1783-1792: the "Network" box text, fields and "Always go through the relay" checkbox
+  - room/errors.js joinStep(): JOIN_TIMEOUT_MS 15000, JOIN_ICE_MS 40000, the "Found the room, but..." message
+  - PR #259: TURN relay (3 tabs, all links relayed, 33 tok/s); tests/e2e/turn_server.mjs, room_chaos.mjs --plan turn
+  - coturn section fact-checked 2026-09-30 (coturn 4.18 Docker; Ubuntu coturn 4.6.1: /etc/turnserver.conf, user turnserver).
+    TODO(verify): not yet tried from a live room against a real coturn.
+  - The site's relay (PR #264): api/turn.mjs, room/ice.js wantDefaultRelay / iceConfig opts.force, weightsOverLink.
+    Live check 2026-09-30: POST /api/turn with Origin https://pooled.run -> 200 (cloudflare, ttl 21600); other Origin -> 403.
+*/}
+
+import { Tabs, TabItem, Steps } from '@astrojs/starlight/components';
+
+A TURN relay forwards traffic between two devices that can't reach each other directly, for example behind carrier-grade NAT or a firewall that blocks UDP. Most rooms never need one.
+
+**On pooled.run you don't need to do anything.** Every device gets short-lived credentials for the site's relay from `POST /api/turn` and uses it only when no direct path works. This page is for using your own relay, or giving your own deployment one.
+
+:::tip
+Try the easy fix first. Both devices on the same Wi-Fi usually get a direct path, which is faster than any relay.
+:::
+
+## Use your own relay
+
+A relay you set replaces the site's. A relay in the URL wins over the one saved in the Network box, and `window.TURN_SERVERS` is added on top of either.
+
+<Tabs>
+  <TabItem label="Network box">
+    Under the join form, open **Network** and fill in:
+
+    - **Relay server URL**: `turn:relay.example.org:3478`, or `turns:` for TLS. Comma-separate several.
+    - **Username** and **Password**.
+
+    Press **Save**. It is saved in this browser only. **Remove** clears it.
+  </TabItem>
+  <TabItem label="URL">
+    ```text
+    https://pooled.run/room?turn=turn:relay.example.org:3478&turnuser=NAME&turncred=PASSWORD
+    ```
+  </TabItem>
+  <TabItem label="Your deployment">
+    Define `window.TURN_SERVERS`, an array of [`RTCIceServer`](https://developer.mozilla.org/en-US/docs/Web/API/RTCIceServer) objects, before `room.js` loads:
+
+    ```html title="p2p.html"
+    <script>
+      window.TURN_SERVERS = [
+        { urls: "turns:relay.example.org:5349", username: "pooled", credential: "CHANGE_ME" }
+      ];
+    </script>
+    ```
+  </TabItem>
+</Tabs>
+
+Relay URLs look like `turn:host[:port]` or `turns:host[:port]`, optionally with `?transport=udp` or `?transport=tcp`. Put the username and password in their own fields, never in the URL. An invalid URL is dropped and the rest still work.
+
+A relay of your own is set per device: each device that can't connect directly needs it. Invite links and QR codes never include `turn`, `turnuser`, `turncred` or `relay`, so send relay details separately.
+
+### Relay only
+
+By default the browser prefers a direct path. Check **Always go through the relay** (or add `?relay=1`) to use only the relay, so other devices never see this device's IP address. `?relay=1` applies to whichever relay the page has. `?relay=0` stops the page from asking for the site's relay.
+
+### Check that it works
+
+- `pooledDebug()` in the browser console shows each link's `path` (`direct` or `relay`) and `via` (`udp`, `tcp` or `tls`).
+- The room log notes relayed links, for example "link to laptop goes through the relay (TURN over TLS); model weights never go over it".
+- `pooledNet()` shows where the relay comes from (`default`, `yours`, `site`) and whether UDP gets out.
+
+A relay adds a hop to every token, so answers are slower than over a direct path.
+
+## Give your deployment a relay (/api/turn)
+
+`api/turn.mjs` is a Vercel Function. `POST /api/turn` returns `iceServers` with credentials that expire; the page asks when it opens a room and again at 3/4 of their lifetime. With no provider set it answers `204` and rooms use direct links only.
+
+- **Model weights never go over it.** A device whose link to a weight source is relayed downloads those layers from Hugging Face instead. Only token traffic, a few KB per token per hop, crosses the relay.
+- **Only this site's pages may ask.** The `Origin` must be the deployment's own (previews included) or in `TURN_ALLOWED_ORIGINS`; anything else gets `403`.
+- **Nothing secret in the page.** The provider's key stays in the Vercel environment.
+
+### Cloudflare TURN (what pooled.run uses)
+
+Anycast on UDP and TCP 3478 and TLS 443. The first 1,000 GB a month are free, then $0.05 per GB.
+
+<Steps>
+
+1. In the [Cloudflare dashboard](https://dash.cloudflare.com), open **Realtime → TURN Server** and create a TURN key. Copy the **Turn Token ID** and the **API Token** (shown once). See [Cloudflare's docs](https://developers.cloudflare.com/realtime/turn/).
+
+2. In Vercel, **Settings → Environment Variables**, add for Production and Preview:
+
+   - `TURN_KEY_ID`: the Turn Token ID
+   - `TURN_KEY_API_TOKEN`: the API Token (mark it Sensitive)
+
+3. Redeploy production. Environment variables reach only new deployments.
+
+4. Check it:
+
+   ```sh
+   curl -si -X POST -H 'Origin: https://pooled.run' https://pooled.run/api/turn
+   ```
+
+   `200` with `iceServers` works; `204` means the variables aren't set. Then open a room with `?relay=1` on two devices: the log should say "goes through the relay (TURN over …)".
+
+</Steps>
+
+Port-53 URLs from Cloudflare are dropped, because browsers block port 53.
+
+### Or coturn with a shared secret
+
+Run coturn in `use-auth-secret` mode, with TLS on 443 for strict firewalls:
+
+```ini title="/etc/turnserver.conf"
+listening-port=3478
+tls-listening-port=443
+cert=/etc/letsencrypt/live/relay.example.org/fullchain.pem
+pkey=/etc/letsencrypt/live/relay.example.org/privkey.pem
+use-auth-secret
+static-auth-secret=<a long random string>
+realm=relay.example.org
+no-multicast-peers
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+total-quota=200
+bps-capacity=0
+```
+
+Then set in Vercel `TURN_SECRET` (the same secret) and `TURN_HOST=relay.example.org`, which hands out `turn:…:3478` (UDP and TCP) and `turns:…:443`. Or set `TURN_URLS` to your own comma-separated list. The function signs `<expiry>:pooled` with HMAC-SHA1 of the secret. If both providers are set, Cloudflare wins.
+
+### Optional settings
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TURN_TTL` | `21600` (6 h) | Credential lifetime in seconds, 600 to 86400. |
+| `TURN_RATE` | `10` | Credential requests per minute per IP, per function instance. |
+| `TURN_ALLOWED_ORIGINS` | none | Other origins allowed to ask, comma-separated. `*` matches within one host label (`https://pooled-*.vercel.app`). |
+
+### Abuse and cost
+
+The `Origin` check stops other websites from minting credentials, but not a script, which can forge headers. So credentials are short-lived, `TURN_RATE` slows abuse per instance, and for a hard limit add a Vercel Firewall rule (path equals `/api/turn` → Rate limit, for example 20 per minute per IP). Set a spending cap or usage alert with the provider too.
+
+## Run coturn with a fixed password
+
+This setup is for a relay you type into the Network box or URL. Run it on a machine with a public IP address.
+
+<Steps>
+
+1. Install coturn: `sudo apt install coturn`, or `docker pull coturn/coturn`.
+
+2. Write a config with one long-term user. The Debian and Ubuntu package reads `/etc/turnserver.conf`; for Docker, put it at `/etc/coturn/turnserver.conf` on the host.
+
+   ```ini title="/etc/turnserver.conf"
+   listening-port=3478
+   tls-listening-port=5349
+   realm=relay.example.org
+   fingerprint
+   lt-cred-mech
+   user=pooled:CHANGE_ME
+
+   # TLS for turns: (copies of your certificate and key)
+   cert=/etc/coturn/certs/fullchain.pem
+   pkey=/etc/coturn/certs/privkey.pem
+
+   min-port=49152
+   max-port=65535
+
+   # Only if the machine is behind NAT (a cloud VM with a private address):
+   # external-ip=<public IP>/<private IP>
+
+   no-multicast-peers
+   denied-peer-ip=10.0.0.0-10.255.255.255
+   denied-peer-ip=172.16.0.0-172.31.255.255
+   denied-peer-ip=192.168.0.0-192.168.255.255
+   ```
+
+   The key and certificate must be readable by coturn's user (`turnserver` for the package, `nobody` in Docker). Let's Encrypt's `privkey.pem` is root-only, so copy both files to `/etc/coturn/certs/` after each renewal (a certbot deploy hook works).
+
+3. Open the firewall: 3478 UDP and TCP, 5349 TCP, and UDP 49152 to 65535.
+
+4. Start it.
+
+   <Tabs>
+     <TabItem label="Debian / Ubuntu">
+       ```sh
+       sudo systemctl enable --now coturn
+       ```
+     </TabItem>
+     <TabItem label="Docker">
+       ```sh
+       docker run -d --name coturn --network=host \
+         -v /etc/coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro \
+         -v /etc/coturn/certs:/etc/coturn/certs:ro \
+         coturn/coturn -c /etc/coturn/turnserver.conf --log-file=stdout
+       ```
+     </TabItem>
+   </Tabs>
+
+5. Point devices at it, for example:
+
+   ```text
+   ?turn=turns:relay.example.org:5349,turn:relay.example.org:3478&turnuser=pooled&turncred=CHANGE_ME
+   ```
+
+6. Join a room with **Always go through the relay** checked and run `pooledDebug()`: every link should show `path: "relay"`.
+
+</Steps>
+
+:::caution
+Anyone with the username and password can use your relay's bandwidth. Share them only with people in your rooms.
+:::
+
+## Tests
+
+```sh
+node tests/e2e/room_chaos.mjs --devices 3 --plan turn --nomodel   # join fails without a relay, works through one
+node tests/e2e/room_chaos.mjs --devices 3 --plan turn             # also runs answers (needs a GPU)
+```
+
+These use a minimal loopback TURN server (`tests/e2e/turn_server.mjs`, not for real use) and need `npm install`. The site's relay is covered by `tests/unit/turn_api_test.js`, `tests/unit/ice_test.js` and `tests/e2e/room_relay.mjs`.

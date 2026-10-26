@@ -1,5 +1,5 @@
-// Deno test: run the WebGPU engine against ref.js golden vectors.
-// usage: deno run --unstable-webgpu --allow-read test_deno.js
+// Deno test: run the WebGPU engine against ref.cjs golden vectors.
+// usage: deno run --unstable-webgpu --allow-read tests/test_smollm.js
 import { parseSafetensors, makeTokenizer, DenseEngine, argmax } from "../engine/engine.js";
 
 const dir = new URL(".", import.meta.url).pathname;
@@ -59,4 +59,4 @@ console.log("generated:", JSON.stringify(tok.decode(gen)));
 console.log("golden   :", JSON.stringify(tok.decode(golden.generated)));
 console.log(`speed: ${(gen.length / secs).toFixed(1)} tok/s`);
 console.log(topMatch && tokMatch && worst < 0.02 ? "\nPASS ✓" : "\nFAIL ✗");
-Deno.exit(topMatch && tokMatch ? 0 : 1);
+Deno.exit(topMatch && tokMatch && worst < 0.02 ? 0 : 1);

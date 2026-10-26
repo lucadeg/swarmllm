@@ -1,16 +1,16 @@
 // Qwen3 (dense) CPU reference from a GGUF file. Golden source for the
-// quantized WebGPU path. Deltas vs ref.js (llama): decoupled head_dim
+// quantized WebGPU path. Deltas vs ref.cjs (llama): decoupled head_dim
 // (qDim = nH*headDim != hidden), per-head QK-norm before rope.
 // usage: node ref_qwen.mjs "prompt" [numTokens] [--golden out.json]
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { parseGGUFHeader, dequantF32, ggmlLayerNames, GGML_EMBED, GGML_FINAL_NORM, GGML_OUTPUT } from "../engine/gguf.js";
+import { parseGGUFHeader, dequantF32, ggmlLayerNames, GGML_EMBED, GGML_FINAL_NORM, GGML_OUTPUT } from "../../engine/gguf.js";
 
-const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), process.env.QWEN_DIR || "qwen");
+const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), process.env.QWEN_DIR || "../../models/qwen");
 
-// ---- tokenizer: reuse ref.js's BPE via a tiny re-implementation import ----
-import { makeTokenizer } from "../engine/engine.js";
+// ---- tokenizer: the engine's makeTokenizer (same byte-level BPE as ref.cjs) ----
+import { makeTokenizer } from "../../engine/engine.js";
 
 function rmsnorm(x, w, eps, out = new Float32Array(x.length)) {
   let ss = 0;

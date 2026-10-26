@@ -1,0 +1,94 @@
+---
+title: CLI reference
+eyebrow: Reference
+description: Every command, flag and exit code of pooled, the command that serves a room as a local OpenAI and Anthropic endpoint.
+sidebar:
+  label: CLI reference
+  order: 2
+---
+{/*
+Sources (origin/main):
+- cli/bin/pooled.js: HELP, parseArgs options and defaults (port 8080, max-queue 8), Node >= 22 check (exit 1), exit 2 on bad
+  args / unknown command / bad code / bad port / empty token, token precedence, EADDRINUSE (exit 1), connect failure (exit 1)
+- cli/lib/room.js roomCodeFrom (4 or 6 letters/digits, dash optional; link: ?code=, last path segment, #hash), roomKeyFrom (#k=),
+  JOIN_MS 15000 (no timeout while waiting in the host's lobby), signalOpts (host:port, secure only on 443)
+- cli/lib/common.js LIMITS.client 40; cli/lib/http.js 127.0.0.1 only
+- cli/package.json 0.2.1 = npm latest
+*/}
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+`pooled` is the command-line bridge from the `@pooled/cli` npm package. Its command is `serve`. For setup, see [Serve API](/docs/serve).
+
+:::note[Coming: pooled chat, join and host]
+`pooled chat`, `pooled join` and `pooled host` are in preview, on npm since 0.3.0. See [Rooms from the terminal](/docs/terminal).
+:::
+
+## Install
+
+Node 22 or newer. No GPU needed.
+
+<Tabs>
+<TabItem label="npx">
+```bash
+npx @pooled/cli serve 4TKG9P
+```
+</TabItem>
+<TabItem label="Global install">
+```bash
+npm install -g @pooled/cli
+pooled serve 4TKG9P
+```
+</TabItem>
+<TabItem label="From the repo">
+```bash
+cd cli && npm install
+node bin/pooled.js serve 4TKG9P
+```
+</TabItem>
+</Tabs>
+
+## Synopsis
+
+```text
+pooled serve <ROOM CODE | room link> [options]
+pooled --version
+pooled --help
+```
+
+The room is a code (six characters like `4TK-G9P`, the dash optional; older rooms have four) or a room link. With the host's invite link, which carries `#k=…`, the host lets the bridge in at once; quote it in the shell. With the code alone, the bridge waits until the host presses **Allow**.
+
+## Options
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--port <n>` | `8080` | HTTP port on `127.0.0.1`. `0` picks a free port and the banner prints it. |
+| `--token-file <f>` | none | Require the token in this file on every request. |
+| `--token <t>` | none | The same, on the command line. Other users can read it with `ps`. |
+| `--name <s>` | `pooled serve` + 4 random letters | How the room shows this client, up to 40 characters. |
+| `--signal <host:port>` | PeerJS cloud | Signaling server, the same one as the room page's `?signal=`. One `host:port` only; the connection is secure only on port 443. |
+| `--max-queue <n>` | `8` | Requests that may wait behind the running one before `429` / `529`. `0` accepts one only when idle. |
+| `--quiet` | off | Print only errors. |
+| `--json-log` | off | One JSON object per log line: `{t, level, msg}`. |
+| `-v`, `--version` | | Print the version. |
+| `-h`, `--help` | | Print the help. |
+
+The `POOLED_TOKEN` environment variable also sets the token. See [Tokens and security](/docs/serve/options#require-a-token).
+
+## Exit codes
+
+| Code | When |
+|---|---|
+| `0` | `--version`, `--help`, no arguments, or a clean stop with Ctrl-C or `SIGTERM`. |
+| `1` | Node older than 22, the port is busy, or joining the room failed (no such room within 15 s, the signaling server unreachable, the host turned it away). |
+| `2` | Bad arguments: unknown command or flag, a missing or malformed room code, a bad `--port` or `--max-queue`, an empty or unreadable token. `pooled serve --help` also exits `2`. |
+
+On Ctrl-C, open requests end with an error and the client leaves the room. A second Ctrl-C exits at once.
+
+:::tip[Port 8080 is busy]
+The repo's `npm run serve` also uses 8080. Pass `--port 8081` and change the base URLs to match.
+:::
+
+## Version
+
+`pooled --version` prints the version you have; `npx @pooled/cli@latest` runs the newest. From 0.4.0, `pooled host` and `pooled join` take `--ram`, which lets a discrete GPU keep a MoE model's experts in system RAM ([MoE experts in system RAM](/docs/terminal#moe-experts-in-system-ram)). See the [changelog](/docs/reference/changelog).

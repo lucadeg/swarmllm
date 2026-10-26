@@ -1,0 +1,115 @@
+---
+title: Serve API
+eyebrow: Use it
+description: Use a room from your own tools. One command turns the room into a local OpenAI and Anthropic compatible endpoint.
+sidebar:
+  label: Serve API
+  order: 1
+---
+{/* Sources (origin/main): cli/README.md (top, Getting in, How it works, APIs), cli/bin/pooled.js (HELP, Node 22 check,
+    room code 4 or 6 characters or a link with #k=), cli/lib/banner.js (banner, agent settings printed once the model is
+    ready), cli/lib/http.js (/health, Retry-After 5, KEEPALIVE_MS 10000), cli/lib/room.js (KNOCK_MS 3000, HOST_WAIT_MS
+    60000, lobby wait), room.js apiCommand() (host: quoted invite link; others: the code), p2p.html #api-panel and
+    #api-allow ("Allow API clients", on by default), docs/design/serve.md §6 (Disconnect, chat line "via API"),
+    room/models.js CTX. @pooled/cli 0.2.1 on npm. */}
+
+import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+`pooled serve` lets Codex CLI, Claude Code, opencode, Open WebUI, the OpenAI and Anthropic SDKs, or anything else that takes a base URL, run on your room's model. It is a small Node program that joins the room and serves the model on `127.0.0.1`. The model still runs on the room's devices. The computer that runs it needs Node 22 or newer and no GPU.
+
+## Quickstart
+
+<Steps>
+
+1. **Start a model in a room.** See [Start a room](/docs/start-a-room). Keep the host's page open.
+
+2. **Open the Serve API page.** Press the black **Serve API** button in the room's header (**API** on a narrow phone). It shows the command for this room, with a **Copy** button.
+
+3. **Run the command** on the computer where your tools run:
+
+   ```bash
+   npx @pooled/cli serve "https://pooled.run/r/4TKG9P#k=…"
+   ```
+
+   On the host, the command carries the room's invite link, so the bridge gets in at once. Quote it. With the code alone (`serve 4TK-G9P`), the bridge waits until the host presses **Allow**.
+
+4. **Point your tool at it.** The banner prints both base URLs:
+
+   | API | Base URL |
+   |---|---|
+   | OpenAI (Chat Completions, Responses) | `http://127.0.0.1:8080/v1` |
+   | Anthropic (Messages) | `http://127.0.0.1:8080` |
+
+   Any API key works. Once the model is ready, the banner also prints ready-made settings for Codex, Claude Code and opencode. See [Connect your tools](/docs/serve/recipes).
+
+</Steps>
+
+## Try it
+
+<Tabs syncKey="lang">
+<TabItem label="curl">
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model": "pooled", "messages": [{"role": "user", "content": "Hi"}]}'
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="pooled")
+r = client.chat.completions.create(model="pooled", messages=[{"role": "user", "content": "Hi"}])
+print(r.choices[0].message.content)
+```
+
+</TabItem>
+<TabItem label="JavaScript">
+
+```js
+import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "http://127.0.0.1:8080/v1", apiKey: "pooled" });
+const r = await client.chat.completions.create({ model: "pooled", messages: [{ role: "user", content: "Hi" }] });
+console.log(r.choices[0].message.content);
+```
+
+</TabItem>
+<TabItem label="Anthropic">
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic(base_url="http://127.0.0.1:8080", api_key="pooled")
+m = client.messages.create(model="pooled", max_tokens=400, messages=[{"role": "user", "content": "Hi"}])
+print(m.content[0].text)
+```
+
+</TabItem>
+</Tabs>
+
+`model` can be any string. Until the room's model is started, requests get `503` with `Retry-After: 5`. `GET /health` says `"ready": true` once the room can answer.
+
+## Pick a model for agents
+
+Coding agents send long prompts (15,000 to 20,000 tokens for Codex and Claude Code) and need a model that calls tools reliably. Use the **Qwen3.6 35B MoE** or the **Qwen3.8 27B**: rooms open them at the longest context their memory holds (up to 128K and 64K). The Qwen3 1.7B is too small for them. See [Limits and context](/docs/serve/limits).
+
+:::caution[Your prompts go to the room]
+Everything a tool sends goes to the room's host and the devices that run the model. Coding tools send file contents and sometimes secrets. Only use a room you trust. See [Who sees your prompts](/docs/serve/options#who-sees-your-prompts).
+:::
+
+## The Serve API page
+
+- **Status.** "Waiting for a client to connect" changes to the tool's name, for example "Continue is connected". **Connected now** lists each client and how many requests it got answered. A blue dot on the header button means a client is connected.
+- **This device.** The left half shows what this device holds: Standing by, Loading, Serving (with its layer range) or Not holding layers, plus warnings about a sleeping screen, a low battery or a background tab.
+- **Host controls.** The host can **Disconnect** a client, or turn off **Allow API clients** (on by default) to disconnect all of them and refuse new ones. A disconnected bridge stays up but answers `503` until you restart it.
+- **In the chat.** API requests show in the room's chat as "via API", under the room's **Who sees the chat** setting.
+
+## Details
+
+- Each HTTP request is one question to the room. Your tool sends the whole conversation every time. When it resends the room's last answer unchanged, the room reuses its caches and reads only the new turn.
+- The room answers one request at a time; its chat, Code mode and API clients share one queue. Up to 8 requests wait in the bridge (`--max-queue`), and streams get a keep-alive every 10 s while they wait.
+- If the host's page reloads, requests in flight fail, and the bridge reconnects by itself within a minute.
+- Every flag is in the [CLI reference](/docs/reference/cli#options); tokens and who sees what are on [Tokens and security](/docs/serve/options). Every path and status code is on [HTTP endpoints](/docs/reference/endpoints).

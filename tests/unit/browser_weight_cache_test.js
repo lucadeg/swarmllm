@@ -1,0 +1,345 @@
+// Browser converted-weights cache (room/convertedcache.js, issue #77): cache keys, invalidation on a
+// revision / header / converter change, the entry format, quota handling, and a second load through
+// engine/gguf.js ggufEntry that skips the conversion. OPFS is an in-memory fake here.
+//   deno test --allow-read --no-check tests/unit/browser_weight_cache_test.js
+import { assert, assertEquals, assertNotEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { ggufEntry, convertEntry, GGML_Q8_0, GGML_BF16, GGML_F32 } from "../../engine/gguf.js";
+import { LOADER_VERSION } from "../weight_cache.js";
+import {
+  WCACHE_DIR, HDR, revisionOf, modelOf, headerFingerprint, cacheDirName, converterVersion, worthCaching, isQuotaError,
+  encodeEntry, decodeEntry, entryFile, BrowserWeightCache, convertedBytes, clearConverted, attachBrowserWeightCache,
+  convertedByModel, deleteConverted,
+} from "../../room/convertedcache.js";
+import { FakeDir, FakeFile } from "../helpers/fake-opfs.js";
+
+// ---- synthetic tensors: one Q8_0 matrix (repack) and one BF16 matrix (-> f32) ----
+function makeModel({ offsetShift = 0 } = {}) {
+  const rows = 256, cols = 1024, n = rows * cols;
+  const q8 = { name: "blk.0.ffn_down.weight", ggmlType: GGML_Q8_0, shape: [rows, cols], nElems: n, byteLength: (n / 32) * 34, offset: 0 };
+  const bf = { name: "token_embd.weight", ggmlType: GGML_BF16, shape: [rows, cols], nElems: n, byteLength: n * 2, offset: q8.byteLength + offsetShift };
+  const norm = { name: "blk.0.attn_norm.weight", ggmlType: GGML_F32, shape: [cols], nElems: cols, byteLength: cols * 4, offset: bf.offset + bf.byteLength };
+  const dataStart = 4096, tensors = {};
+  for (const t of [q8, bf, norm]) tensors[t.name] = { ...t, byteOffset: dataStart + t.offset };
+  const file = new Uint8Array(dataStart + norm.offset + norm.byteLength);
+  let x = 12345;
+  for (let i = 0; i < file.length; i++) { x = (Math.imul(x, 1103515245) + 12345) >>> 0; file[i] = x >>> 24; }
+  // keep the Q8_0 scales and BF16 values finite: f16 scale / bf16 high byte below the exponent max
+  for (let b = 0; b < n / 32; b++) file[tensors[q8.name].byteOffset + b * 34 + 1] &= 0x3b;
+  for (let i = 0; i < n; i++) file[tensors[bf.name].byteOffset + i * 2 + 1] &= 0x3f;
+  const G = { meta: { "general.architecture": "qwen3", "qwen3.block_count": 1, "tokenizer.ggml.tokens": ["a", "b"] }, tensors, dataStart };
+  let reads = 0;
+  const bytesOf = async (info) => { reads++; return file.slice(info.byteOffset, info.byteOffset + info.byteLength); };
+  return { G, bytesOf, reads: () => reads, file };
+}
+const same = (a, b) => {
+  const u = (v) => new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+  if (a.kind !== b.kind) return false;
+  const pairs = a.kind === "f32" ? [[a.data, b.data]] : [[a.qs, b.qs], [a.scales, b.scales]];
+  return pairs.every(([x, y]) => { const p = u(x), q = u(y); return p.length === q.length && p.every((v, i) => v === q[i]); });
+};
+const URL_MAIN = "https://huggingface.co/org/repo/resolve/main/Model-Q4_0.gguf";
+const URL_PIN = "https://huggingface.co/org/repo/resolve/0123abcd/Model-Q4_0.gguf";
+const open = (root, G, extra = {}) => BrowserWeightCache.open(root, { url: URL_PIN, G, converter: "e1-test", ...extra });
+
+Deno.test("revisionOf reads the pinned revision out of a resolve URL", () => {
+  assertEquals(revisionOf(URL_PIN), "0123abcd");
+  assertEquals(revisionOf(URL_MAIN), "main");
+  assertEquals(revisionOf("https://huggingface.co/org/repo/resolve/refs%2Fpr%2F3/m.gguf"), "refs/pr/3");
+  assertEquals(revisionOf("https://example.com/models/m.gguf"), "");
+  assertEquals(revisionOf(undefined), "");
+  assertEquals(modelOf(URL_PIN), modelOf(URL_MAIN));
+  assertEquals(modelOf(URL_MAIN), "https://huggingface.co/org/repo/resolve/*/Model-Q4_0.gguf");
+  assertNotEquals(modelOf(URL_MAIN), modelOf(URL_MAIN.replace("Q4_0", "Q8_0")));
+});
+
+Deno.test("cache key: stable for the same inputs, new for any change", async () => {
+  const { G } = makeModel();
+  const base = { url: URL_PIN, revision: "0123abcd", fingerprint: headerFingerprint(G), converter: "e1-aaaa" };
+  const k = await cacheDirName(base);
+  assertEquals(k, await cacheDirName({ ...base }));
+  assert(/^Model-Q4_0-[0-9a-f]{16}$/.test(k), k);
+  for (const change of [{ url: URL_MAIN }, { revision: "fedcba98" }, { converter: "e1-bbbb" }, { variant: "x" },
+    { fingerprint: headerFingerprint(makeModel({ offsetShift: 32 }).G) }])
+    assertNotEquals(await cacheDirName({ ...base, ...change }), k, JSON.stringify(Object.keys(change)));
+});
+
+Deno.test("header fingerprint ignores the tokenizer, sees tensor and metadata changes", () => {
+  const { G } = makeModel();
+  const f = headerFingerprint(G);
+  const noTok = { ...G, meta: { ...G.meta } }; delete noTok.meta["tokenizer.ggml.tokens"];
+  assertEquals(headerFingerprint(noTok), f);
+  assertNotEquals(headerFingerprint({ ...G, meta: { ...G.meta, "qwen3.block_count": 2 } }), f);
+  const retyped = { ...G, tensors: { ...G.tensors, "token_embd.weight": { ...G.tensors["token_embd.weight"], ggmlType: GGML_F32 } } };
+  assertNotEquals(headerFingerprint(retyped), f);
+  // table order does not matter
+  assertEquals(headerFingerprint({ ...G, tensors: Object.fromEntries(Object.entries(G.tensors).reverse()) }), f);
+});
+
+Deno.test("converter version matches the CLI cache's LOADER_VERSION for the same engine/gguf.js", async () => {
+  const src = await Deno.readFile(new URL("../../engine/gguf.js", import.meta.url));
+  assertEquals(await converterVersion(src), LOADER_VERSION);
+  const edited = new Uint8Array([...src, 10]);
+  assertNotEquals(await converterVersion(edited), LOADER_VERSION);
+});
+
+Deno.test("what gets cached, and what counts as out of room", () => {
+  assert(worthCaching({ ggmlType: GGML_BF16, byteLength: 2 ** 20 }));
+  assert(!worthCaching({ ggmlType: GGML_BF16, byteLength: 1024 }));     // small: converting is cheaper
+  assert(!worthCaching({ ggmlType: GGML_F32, byteLength: 2 ** 30 }));   // plain copy, nothing saved
+  assert(isQuotaError(new DOMException("The operation failed because it would cause the quota to be exceeded", "QuotaExceededError")));
+  assert(isQuotaError({ name: "Error", code: 22 }));
+  assert(isQuotaError({ name: "NS_ERROR_DOM_QUOTA_REACHED" }));
+  assert(!isQuotaError(new DOMException("no", "NotAllowedError")));
+  assert(!isQuotaError(null));
+});
+
+Deno.test("entry format: round trip for q8 / f32, rejects the wrong tensor, a short file and a bad payload", async () => {
+  const { G, bytesOf } = makeModel();
+  for (const name of ["blk.0.ffn_down.weight", "token_embd.weight"]) {
+    const info = G.tensors[name], e = convertEntry(info, await bytesOf(info));
+    const enc = encodeEntry(info, e);
+    assert(enc, name);
+    const buf = new Uint8Array(enc.bytes); let o = 0;
+    for (const p of enc.parts) { buf.set(new Uint8Array(p.buffer, p.byteOffset, p.byteLength), o); o += p.byteLength; }
+    assertEquals(o, enc.bytes);
+    assert(same(decodeEntry(info, buf.buffer, true), e), name);
+    const other = { ...info, ggmlType: info.ggmlType === GGML_Q8_0 ? GGML_BF16 : GGML_Q8_0 };
+    let threw = false; try { decodeEntry(other, buf.buffer); } catch { threw = true; } assert(threw, "wrong type");
+    threw = false; try { decodeEntry(info, buf.slice(0, enc.bytes - 4).buffer); } catch { threw = true; } assert(threw, "short");
+    const bad = buf.slice(); bad[HDR + 7] ^= 1;
+    decodeEntry(info, bad.buffer, false);   // header-only check passes
+    threw = false; try { decodeEntry(info, bad.buffer, true); } catch { threw = true; } assert(threw, "checksum");
+  }
+  assertEquals(encodeEntry(G.tensors["token_embd.weight"], { kind: "f32", data: new Float32Array(3) }), null);
+  assertEquals(encodeEntry(G.tensors["token_embd.weight"], { gpu: {} }), null);
+});
+
+Deno.test("second load through ggufEntry takes the cached entries, no read and the same bytes", async () => {
+  const root = new FakeDir();
+  const m = makeModel();
+  const G1 = { ...m.G, entryCache: await open(root, m.G) };
+  const names = Object.keys(m.G.tensors);
+  const fresh = {};
+  for (const n of names) fresh[n] = await ggufEntry(G1, m.bytesOf, n, false);
+  await G1.entryCache.flush();
+  assertEquals(G1.entryCache.stats.write, 2);           // the f32 norm is not worth a file
+  assertEquals(m.reads(), 3);
+
+  const G2 = { ...m.G, entryCache: await open(root, m.G) };
+  for (const n of names) assert(same(await ggufEntry(G2, m.bytesOf, n, false), fresh[n]), n);
+  assertEquals(G2.entryCache.stats.hit, 2);
+  assertEquals(m.reads(), 4);                           // only the norm was read again
+  assert(G2.entryCache.summary().includes("2 from this device"));
+});
+
+Deno.test("invalidation: a new revision, header or converter drops the old entries", async () => {
+  const root = new FakeDir();
+  const m = makeModel();
+  const c1 = await open(root, m.G);
+  await ggufEntry({ ...m.G, entryCache: c1 }, m.bytesOf, "token_embd.weight", false);
+  await c1.flush();
+  const top = await root.getDirectoryHandle(WCACHE_DIR);
+  assertEquals(top.children.size, 1);
+
+  // same URL, new header (a re-upload under the same revision)
+  const m2 = makeModel({ offsetShift: 32 });
+  const c2 = await open(root, m2.G);
+  assertNotEquals(c2.meta.dir, c1.meta.dir);
+  assertEquals([...top.children.keys()], [c2.meta.dir]);
+  assertEquals(await c2.get(m2.G.tensors["token_embd.weight"]), null);
+
+  // new converter version
+  const c3 = await open(root, m2.G, { converter: "e1-other" });
+  assertEquals([...top.children.keys()], [c3.meta.dir]);
+
+  // a new pinned revision of the same file replaces it
+  const c4 = await open(root, m2.G, { url: URL_MAIN, converter: "e1-other" });
+  assertEquals([...top.children.keys()], [c4.meta.dir]);
+  // another model keeps its own directory
+  const other = URL_PIN.replace("Q4_0", "Q8_0");
+  const c5 = await open(root, m2.G, { url: other, converter: "e1-other" });
+  assertEquals(new Set(top.children.keys()), new Set([c4.meta.dir, c5.meta.dir]));
+});
+
+Deno.test("a damaged entry is dropped and converted fresh; leftover temp files are cleaned up", async () => {
+  const root = new FakeDir();
+  const m = makeModel();
+  const c1 = await open(root, m.G);
+  const info = m.G.tensors["token_embd.weight"];
+  const e = await ggufEntry({ ...m.G, entryCache: c1 }, m.bytesOf, info.name, false);
+  await c1.flush();
+  const dir = c1.dir, f = dir.children.get(entryFile(info.name));
+  f.data = f.data.slice(0, f.data.byteLength - 8);          // torn write
+  await dir.getFileHandle(entryFile(info.name) + ".tmp-dead", { create: true });
+
+  const c2 = await open(root, m.G);
+  assert(![...dir.children.keys()].some((n) => n.includes(".tmp-")));
+  assertEquals(await c2.get(info), null);
+  assertEquals(c2.stats.bad, 1);
+  assert(!dir.children.has(entryFile(info.name)));
+  const again = await ggufEntry({ ...m.G, entryCache: c2 }, m.bytesOf, info.name, false);
+  assert(same(again, e));
+  await c2.flush();
+  assert(dir.children.has(entryFile(info.name)));           // rewritten
+});
+
+Deno.test("quota: a reported quota below the write size still writes, persist() is asked once", async () => {
+  const m = makeModel();
+  const root = new FakeDir();
+  let persists = 0, estimates = 0;
+  // a fresh origin in Chrome: estimate() reports far less than the disk has, and grows as the origin writes
+  const storage = {
+    getDirectory: async () => root,
+    estimate: async () => { estimates++; return { quota: 1024, usage: 512 }; },
+    persist: async () => { persists++; return false; },   // denied: the cache works the same
+  };
+  const fetchFn = async () => new Response(await Deno.readFile(new URL("../../engine/gguf.js", import.meta.url)));
+  const G = { ...m.G };
+  const c = await attachBrowserWeightCache(G, URL_PIN, { storage, srcUrl: "https://quota/engine/gguf.js", fetchFn });
+  assertEquals(persists, 0);                                // not before there is something to write
+  for (const n of Object.keys(m.G.tensors)) await ggufEntry(G, m.bytesOf, n, false);
+  await c.flush();
+  assertEquals(c.stats.write, 2);
+  assertEquals(c.stats.full, 0);
+  assertEquals(persists, 1);
+  assertEquals(estimates, 0);                               // no precheck against the estimate
+  assert(await c.get(m.G.tensors["token_embd.weight"]));
+
+  // persist() missing or throwing: still writes
+  const t = await open(new FakeDir(), m.G, { persist: async () => { throw new Error("no"); } });
+  const info = m.G.tensors["token_embd.weight"];
+  await t.put(info, convertEntry(info, await m.bytesOf(info))); await t.flush();
+  assertEquals(t.stats.write, 1);
+});
+
+Deno.test("quota: a QuotaExceededError on write stops caching, leaves no partial entry, never throws", async () => {
+  const m = makeModel();
+  const info = m.G.tensors["token_embd.weight"], q8 = m.G.tensors["blk.0.ffn_down.weight"];
+  const e = convertEntry(info, await m.bytesOf(info)), eq = convertEntry(q8, await m.bytesOf(q8));
+  const warn = console.warn, warned = [];
+  console.warn = (...a) => warned.push(a.join(" "));
+  try {
+    for (const noMove of [false, true]) {   // with move() (temp name), and writing the real name directly
+      const orig = FakeFile.prototype.move;
+      if (noMove) FakeFile.prototype.move = undefined;
+      try {
+        const root = new FakeDir();
+        const c = await open(root, m.G);
+        root.failWrites = true;
+        await c.put(info, e); await c.flush();              // resolves: the load goes on converting
+        assert(c.readOnly);
+        assertEquals([c.stats.full, c.stats.write], [1, 0]);
+        assertEquals([...c.dir.children.keys()].filter((n) => n.endsWith(".bin") || n.includes(".tmp-")), []);
+        root.failWrites = false;
+        await c.put(q8, eq); await c.flush();               // read-only for the rest of this load
+        assertEquals([c.stats.full, c.stats.write], [2, 0]);
+        assertEquals(await c.get(info), null);
+        // the next load finds nothing to read back as valid, and caches again
+        const c2 = await open(root, m.G);
+        assertEquals(c2.have.size, 0);
+        await c2.put(info, e); await c2.flush();
+        assertEquals(c2.stats.write, 1);
+        assert(same(await c2.get(info), e));
+      } finally { FakeFile.prototype.move = orig; }
+    }
+    assertEquals(warned.filter((w) => /out of storage/.test(w)).length, 2);   // once per load
+    assert(/not caching the rest of this load/.test(warned[0]));
+  } finally { console.warn = warn; }
+
+  // any other write failure (no writable files here): read-only too, but not counted as full
+  const root3 = new FakeDir(), c3 = await open(root3, m.G);
+  const cw = FakeFile.prototype.createWritable;
+  FakeFile.prototype.createWritable = async () => { throw new DOMException("no", "NotAllowedError"); };
+  console.warn = () => {};
+  try { await c3.put(info, e); await c3.flush(); } finally { FakeFile.prototype.createWritable = cw; console.warn = warn; }
+  assert(c3.readOnly);
+  assertEquals([c3.stats.full, c3.stats.write], [0, 0]);
+});
+
+Deno.test("attach, size and clear", async () => {
+  const m = makeModel();
+  const root = new FakeDir();
+  const storage = { getDirectory: async () => root };
+  let fetches = 0;
+  const fetchFn = async () => { fetches++; return new Response(await Deno.readFile(new URL("../../engine/gguf.js", import.meta.url))); };
+  const G = { ...m.G, entryCache: "stale" };
+  const c = await attachBrowserWeightCache(G, URL_PIN, { storage, srcUrl: "https://x/engine/gguf.js", fetchFn });
+  assert(c && G.entryCache === c);
+  assertEquals(c.meta.converter, LOADER_VERSION);
+  assertEquals(c.meta.revision, "0123abcd");
+  await ggufEntry(G, m.bytesOf, "token_embd.weight", false);
+  await c.flush();
+  await attachBrowserWeightCache({ ...m.G }, URL_PIN, { storage, srcUrl: "https://x/engine/gguf.js", fetchFn });
+  assertEquals(fetches, 1);                                 // hashed once per page
+  assertEquals(await convertedBytes(root), HDR + m.G.tensors["token_embd.weight"].nElems * 4);
+  await clearConverted(root);
+  assertEquals(await convertedBytes(root), 0);
+
+  // no OPFS (older browser, some private windows): no cache, the load converts as before
+  const G2 = { ...m.G, entryCache: "stale" };
+  assertEquals(await attachBrowserWeightCache(G2, URL_PIN, { storage: {}, srcUrl: "x", fetchFn }), null);
+  assertEquals(G2.entryCache, null);
+  const G3 = { ...m.G };
+  assertEquals(await attachBrowserWeightCache(G3, URL_PIN, { storage: { getDirectory: async () => { throw new Error("SecurityError"); } }, srcUrl: "y", fetchFn }), null);
+  assertEquals(G3.entryCache, null);
+});
+
+Deno.test("writes run in the background, at most a window of bytes at a time", async () => {
+  const m = makeModel();
+  const root = new FakeDir();
+  // hold every entry write open until released, to see what put waits for
+  const gates = [];
+  const orig = FakeFile.prototype.createWritable;
+  FakeFile.prototype.createWritable = async function () {
+    const w = await orig.call(this);
+    if (!this.name.includes(".tmp-")) return w;
+    const close = w.close;
+    w.close = () => new Promise((r) => gates.push(r)).then(close);
+    return w;
+  };
+  try {
+    const q8 = m.G.tensors["blk.0.ffn_down.weight"], bf = m.G.tensors["token_embd.weight"];
+    const eq = convertEntry(q8, await m.bytesOf(q8)), eb = convertEntry(bf, await m.bytesOf(bf));
+    const sizeQ = encodeEntry(q8, eq).bytes, sizeB = encodeEntry(bf, eb).bytes;
+    const c = await open(root, m.G, { writeWindow: sizeQ + sizeB - 1 });   // room for one of the two
+    await c.put(q8, eq);                                   // returns with the write still open
+    assertEquals([c.pending.size, c.pendingBytes, c.stats.write], [1, sizeQ, 0]);
+    let second = false;
+    const p2 = c.put(bf, eb).then(() => { second = true; });
+    await new Promise((r) => setTimeout(r, 10));
+    assert(!second, "the second put waits: the window is full");
+    while (!gates.length) await new Promise((r) => setTimeout(r, 1));
+    gates.shift()();
+    await p2;
+    assertEquals(c.stats.write, 1);
+    const f = c.flush();
+    while (!gates.length) await new Promise((r) => setTimeout(r, 1));
+    gates.shift()();
+    await f;
+    assertEquals([c.pending.size, c.pendingBytes, c.stats.write], [0, 0, 2]);
+    assertEquals(await c.get(bf) !== null, true);
+  } finally { FakeFile.prototype.createWritable = orig; }
+});
+
+Deno.test("per model: sizes and deleting one model's converted weights (room menu Delete) leaves the others", async () => {
+  const root = new FakeDir();
+  const m = makeModel();
+  const info = m.G.tensors["token_embd.weight"];
+  const OTHER = "https://huggingface.co/org/other/resolve/main/Other-Q4_0.gguf";
+  for (const url of [URL_PIN, OTHER]) {
+    const c = await open(root, m.G, { url });
+    await ggufEntry({ ...m.G, entryCache: c }, m.bytesOf, info.name, false);
+    await c.flush();
+  }
+  const one = HDR + info.nElems * 4;
+  const by = await convertedByModel(root);
+  assertEquals(by.get(modelOf(URL_PIN)), one);
+  assertEquals(by.get(modelOf(OTHER)), one);
+  // the room lists the model under its catalogue URL (resolve/main): any revision of it matches
+  assertEquals(await deleteConverted(root, URL_MAIN), one);
+  const after = await convertedByModel(root);
+  assert(!after.has(modelOf(URL_PIN)));
+  assertEquals(after.get(modelOf(OTHER)), one);
+  assertEquals(await convertedBytes(root), one);
+  assertEquals(await deleteConverted(new FakeDir(), OTHER), 0);   // nothing cached yet
+});

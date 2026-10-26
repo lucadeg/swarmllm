@@ -1,16 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#f5f4ef"/>
-  <g stroke="#2b4eff" stroke-width="2.2" stroke-linecap="round" opacity="0.55">
-    <line x1="18" y1="22" x2="46" y2="18"/>
-    <line x1="18" y1="22" x2="24" y2="46"/>
-    <line x1="46" y1="18" x2="40" y2="42"/>
-    <line x1="24" y1="46" x2="40" y2="42"/>
-    <line x1="18" y1="22" x2="40" y2="42"/>
-  </g>
-  <g fill="#2b4eff">
-    <circle cx="18" cy="22" r="6.5"/>
-    <circle cx="46" cy="18" r="5"/>
-    <circle cx="24" cy="46" r="5"/>
-    <circle cx="40" cy="42" r="7.5"/>
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 16 16" role="img" aria-label="pooled.run"><title>pooled.run</title><style>circle{fill:#14161D}.lit{fill:#2A45E0}@media (prefers-color-scheme:dark){circle{fill:#EEF0F6}.lit{fill:#7F93FF}}</style><circle cx="2.6" cy="2.6" r="1.9"/><circle cx="8" cy="2.6" r="2.05"/><circle cx="13.4" cy="2.6" r="2.25"/><circle cx="2.6" cy="8" r="2.05"/><circle cx="8" cy="8" r="2.25"/><circle cx="13.4" cy="8" r="2.45"/><circle cx="2.6" cy="13.4" r="2.25"/><circle cx="8" cy="13.4" r="2.45"/><circle class="lit" cx="13.4" cy="13.4" r="2.7"/></svg>

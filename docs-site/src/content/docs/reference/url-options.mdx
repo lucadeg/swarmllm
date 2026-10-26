@@ -1,0 +1,132 @@
+---
+title: URL options
+eyebrow: Reference
+description: Query parameters you can add to a room link to change how that page behaves. Most people never need them.
+sidebar:
+  label: URL options
+  order: 1
+---
+{/*
+Sources (origin/main 40bb0fa). Every default was read from the code:
+- room.js (?ckpt ?ckptdisk ?wire ?wiredup ?ka ?signal ?wake ?wakems ?gbps ?netlag ?hb ?embed ?vname ?vgb ?code ?peerweights ?wcache
+  ?wcacheverify ?prefetch #debug ?ctx ?kv ?fill ?phonelayers ?split ?mtpbatch ?hostfuse ?lookup ?tail ?maxnew ?mock=code ?sim=1)
+- room/transport.js kaMs = 10; room/models.js CTX, maxSeqFor, kvModeFor; room/ice.js turnFrom, shareQuery; room/signal.js;
+  room/plan.js codeFromLocation (regex [A-HJKMNP-TV-Z2-9]{4,6}); room/code.js ?eval; engine/preset.js room flags; p2p.html dev class
+- PR #252 (int8 KV prefill 3.5x slower at 32K); CHANGELOG.md Unreleased (?ka, ?wake, ?phonelayers, ?split)
+*/}
+
+A room page reads options from its own URL. Add them after `?` and join several with `&`:
+
+```text
+https://pooled.run/room?ctx=65536&kv=q8
+```
+
+Each option affects only the tab that opened the link. Options marked **Host** matter only on the device that starts the model. Join links don't carry your options (only `?signal=` when needed), and never carry relay passwords.
+
+## Options for everyone
+
+Supported and stable.
+
+| Option | Default | Where | What it does |
+|---|---|---|---|
+| `?ctx=N` | per model | Host | Context window in tokens: exactly this length, instead of the longest the room holds. Rounded to 256, at least 2048, at most the model's cap (below). |
+| `?kv=q8` | off (f16) | Host | int8 KV cache, about 56% of the memory. 27B and MoE only. Prefill of long prompts gets much slower. |
+| `?split=speed` or `memory` | `speed` | Host | Layer split, same as the room setting. See [How layers are split](/docs/rooms/split). |
+| `?phonelayers=1` | off | Host | Gives phones layers even when the computers can hold the model. |
+| `?signal=SERVER` | PeerJS cloud | Every device | Your own signaling server; a comma list is tried in order. See [Signaling servers](/docs/self-host/signaling). |
+| `?turn=URL` | none | Every device | A TURN relay, with `?turnuser=` and `?turncred=`. See [TURN relay](/docs/self-host/turn). |
+| `?relay=1` | off | Every device | Sends all traffic through the relay, hiding this device's IP address. |
+| `?relay=0` | off | Every device | Never asks the site's `/api/turn` for a relay. |
+| `?turnapi=1` | off | Every device | On `localhost`, asks `/api/turn` anyway. |
+| `?ka=0` | on (10 ms) | Every device | Turns off the keep-alive byte that stops Wi-Fi power save from parking the radio mid-answer. `?ka=N` sets the period in ms. |
+| `?wake=0` | on for phones | Every device | Turns off GPU wake, which keeps a phone's GPU clocked up between laps. `?wake=1` asks for it on any device. |
+| `?ckptdisk=0` | on | Every device | Keeps answer checkpoints in GPU memory only, not on disk, so a reload re-reads the conversation. |
+| `?wcache=0` | on | Every device | Turns off the converted-weights cache on disk. |
+| `?legacyauth=0` | on, for one release | Host | Ignores the raw invite key or pass from a device that runs a Pooled from before channel-bound proofs (it waits for Allow, and the prompt says why) and refuses links that prove nothing. See [Security model](/docs/internals/security#who-is-on-a-link). |
+| `?legacyauth=1` | off | Joining device | **Unsafe.** Sends the raw invite key to a host that runs an older Pooled, as before, instead of waiting for its Allow. Anyone in the middle of signaling can pose as such a host and read the key. |
+
+### Context per model
+
+Without `?ctx=` the 27B and the MoE open at the longest length of their ladder the room holds at full speed (every expert on a GPU, no extra device holding layers), at least their old default when the room holds that; the picker's **Context** row picks another. See [Longer context](/docs/models#longer-context).
+
+| Model | Default | Largest `?ctx=` |
+|---|---|---|
+| Qwen3 1.7B | 16384 (8192 when the room is short of memory) | 16384 |
+| Qwen 3.8 27B | the longest of 65536, 32768, 16384 the room holds at full speed (8192 when the room is short of memory for 16384) | 65536 |
+| Qwen 3.6 35B MoE | the longest of 131072, 65536, 32768 the room holds at full speed (16384 or 8192 when the room is short of memory for 32768) | 131072 |
+| Qwen3.8-Flash-Next (experimental) | 65536 (a room short of memory opens at the longest proven length it holds: 32768, 16384, 8192 or 2048) | 65536 (128K is in progress) |
+| Other models (tests and `?dev=1`) | 2048 (8192 on the hybrid engine) | same |
+
+Long context costs little memory on the 27B and MoE (64K adds about 3 GB to the 27B's 16K, 128K about 2 GB to the MoE's 32K); what limits it is how long the prompt takes to read. See [Long context and sessions](/docs/internals/sessions).
+
+## Room links
+
+A link can carry the room code as `https://pooled.run/r/4TKG9P`, `?code=4TKG9P` or `#4TKG9P` (and `/room/4TKG9P` on servers that route it; pooled.run answers `404`). Codes are 4 to 6 characters with no `I`, `L`, `O`, `U`, `0` or `1`.
+
+## Developer options
+
+:::danger[Unstable]
+For tests, benchmarks and A/B runs. They can change or disappear in any release, and some make a room slower. Don't share links that use them.
+:::
+
+### Page and test modes
+
+| Option | Default | What it does |
+|---|---|---|
+| `?dev=1` | off | Developer controls (link numbers, bandwidth test, virtual devices, draft stats) and every model in `room/models.js` in the picker. Any `?signal=` turns it on unless `?dev=0`. |
+| `#debug` | off | Logs the GPU's buffer limits to the room log when the model loads. |
+| `?sim=1` | off | **localhost only.** Fake devices and chat, to see the UI without a GPU. |
+| `?mock=code` | off | **localhost only.** Code mode without a model, for tests. |
+| `?eval=NAME` | none | **localhost only.** Runs a Code mode eval suite from `tests/eval/`. |
+| `?embed=1`, `?vname=`, `?vgb=` | none | Used by virtual devices: compact page, name, pledge in GB. |
+| `?maxnew=N` | answer length | On the host: chat answers get N tokens; Code and API answers at most N. |
+| `?gbps=N` | measured | Pins this device's GPU copy speed (GB/s), used to pick the host. `0` is unknown. |
+
+### Network and wire
+
+| Option | Default | What it does |
+|---|---|---|
+| `?wire=stripeN` | `stripe4` | Activation frames over N connections (1 to 8). `slice`: one sliced channel; `off`: plain PeerJS messages. |
+| `?wiredup=N` | `3` | Frames of up to N slices are sent twice, on two connections. `0` off, at most 64. |
+| `?netlag=MS` | `0` | Delays every frame this device sends, to emulate a slow link. |
+| `?hb=0` | on | No host heartbeat (detects a silent device mid-answer). |
+| `?peerweights=0` | on | No weights to or from other devices; all downloads from Hugging Face. |
+| `?prefetch=N` | 4 (phones 1) | Tensors the loader requests ahead. `0` off. |
+| `?wakems=MS` | `50` | Longest single GPU-wake spin. |
+| `?wake=keep` | off | Also keeps the GPU busy after this worker sends its frame. |
+
+### Caches and checkpoints
+
+| Option | Default | What it does |
+|---|---|---|
+| `?ckpt=N` | `2` | Keeps the state after the last N answers, so a regenerate or edit resumes instead of re-reading. `0` off. |
+| `?wcacheverify=1` | off | Checks each converted-weights cache entry's hash (slower). |
+
+### Decoding and kernels
+
+Speed switches. Each turns a faster path off; the tokens stay the same unless noted.
+
+| Option | Default | What it does |
+|---|---|---|
+| `?fill=0` | on | No draft-cache fill during a room prefill (fewer drafts accepted). |
+| `?lookup=0` | on | Draft head only, no prompt lookup. |
+| `?densespec=0` | on | Dense models (Qwen3 0.6B / 1.7B / 4B) in a room decode one token per lap, no prompt-lookup drafts. |
+| `?draft=qwen3-0.6b` | off | Experimental. The host also loads Qwen3 0.6B (about 0.7 GB more, outside the pledges) to draft for Qwen3 1.7B / 4B. Same tokens. |
+| `?draftk=N` | `4` | Drafts per lap from `?draft=`, 1 to 7. |
+| `?dspec=0` | off | Testing. This device reports it can't take dense verify frames, like an older build; the host then uses plain laps. |
+| `?tail=0` | on | Old per-token tail after a prefill. |
+| `?mtpbatch=0` | on | One draft-cache row per submit. |
+| `?mtprefill=0` | on | Draft-cache refill as one submit per row. |
+| `?predraft=0` | on | No first draft in the refill pass. |
+| `?draftvocab=N` | `65536` | Drafts over the first N vocabulary rows; `0` for the full head. |
+| `?dvauto=0` | on | Always the small draft head. |
+| `?draftchain=0` | on | Drafts, verify and head as separate submits. |
+| `?specfuse=0` | on | Verify as separate trunk and head submits. |
+| `?hostfuse=0` | on | Host's share of each lap as separate submits. |
+| `?fuse=0` | on | Unfused attention and DeltaNet kernels. |
+| `?moefuse=0` | on | Unfused MoE kernels. **Changes the MoE output bits**: use the same setting on every device. |
+| `?moednrows=N` | `1` | Rows per workgroup in the fused MoE down kernel (1, 2 or 4). |
+| `?gpusample=0` | on | Sample on the CPU instead of the GPU. |
+| `?argmaxwide=0` or `1` | as `gpusample` | Two-stage draft argmax. |
+
+Deno tests and benchmarks take the same switches in `ROOM_FLAGS`, for example `ROOM_FLAGS="kv=q8"`. See [Environment](/docs/reference/environment).

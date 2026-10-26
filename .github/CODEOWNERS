@@ -1,6 +1,7 @@
 # Default owners for everything; add collaborators per path as the project grows.
 *               @Nehanth
 /engine/        @Nehanth
+/harness/       @Nehanth
 /p2p.html       @Nehanth
 /SECURITY.md    @Nehanth
 /GOVERNANCE.md  @Nehanth

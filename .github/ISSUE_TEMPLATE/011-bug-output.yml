@@ -1,11 +1,16 @@
 name: "Bug: wrong or garbled output"
 description: The model produces garbage, NaNs, or output that differs from a reference.
-labels: ["bug", "engine"]
+labels: ["bug", "area: engine"]
 body:
   - type: input
     id: model
     attributes: { label: Model and quantization, placeholder: "Qwen 3.8 27B Q4_0" }
     validations: { required: true }
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options: ["Chat", "Code"]
   - type: input
     id: hw
     attributes: { label: Browser or runtime, OS, GPU, placeholder: "Chrome 140, macOS 26, M4 Pro" }

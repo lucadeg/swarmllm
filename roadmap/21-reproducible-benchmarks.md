@@ -1,6 +1,6 @@
 # 21 · Reproducible benchmarks and the paper's evidence: protocol, `/bench` page, device matrix, per-hop telemetry
 
-**Phase:** next (Oct 30 hard date) · **Status:** planned · _next (Oct 30 hard date) · weeks · high_
+**Phase:** later (paper deadline: MLSys, Oct 30) · **Status:** planned
 
 ## Why
 
@@ -9,7 +9,7 @@ Thirteen proposals describe one gap: every number comes from one GB10 and one Ma
 
 ## Design
 
-See the merged proposals in [docs/roadmap-review.md](../docs/roadmap-review.md) under item 21; turn them into a design note before building.
+See the merged proposals in [docs/archive/roadmap-review.md](../docs/archive/roadmap-review.md) under item 21; turn them into a design note before building.
 
 ## Done when
 
@@ -17,4 +17,4 @@ See the merged proposals in [docs/roadmap-review.md](../docs/roadmap-review.md) 
 
 ## Update (Sep 2026 research round)
 
-Per-hop telemetry in the return frame is specified in [docs/research/network-scheduler.md](../docs/research/network-scheduler.md) SS2 and is a prerequisite for roadmap 09, 25 and 27.
+Per-hop telemetry in the return frame is specified in [docs/archive/research/network-scheduler.md](../docs/archive/research/network-scheduler.md) SS2 and is a prerequisite for roadmap 09, 25 and 27.

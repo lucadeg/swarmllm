@@ -3,11 +3,11 @@
 // reference the WebGPU kernels must match, and the spec for the layer-split:
 // everything between `embed` and `head` is what gets sharded across peers.
 //
-// usage: node ref.js "prompt text" [numTokens] [--golden out.json]
+// usage: node ref.cjs "prompt text" [numTokens] [--golden out.json]
 const fs = require("fs");
 const path = require("path");
 
-const MODEL_DIR = path.join(__dirname, "model");
+const MODEL_DIR = path.join(__dirname, "../../models/model");
 
 // ---------- safetensors ----------
 function loadSafetensors(file) {

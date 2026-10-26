@@ -1,9 +1,9 @@
 # 14 · Pre-flight check, join links, and a model ladder that says what this room can run
 
-**Phase:** now · **Status:** planned
+**Phase:** done · **Status:** landed · Pre-flight, `/r/ABCD` join links with a QR code, and the model ladder shipped. The measured memory budget moved to #44.
 
 ## Why
-The first thing an HN reader does is open swarmllm.ai in whatever browser they have. index.html never mentions WebGPU; the only signal is "⚠ no WebGPU" on a peer card after a room already exists (room.js:125–126), followed by a start button stuck on "add 0.8 GB more". The second thing they do is paste a 4-letter code into Discord for a friend to retype: there is no deep link (`location.hash` is read once, for `#debug`, line 585). Third, the dropdown lists 0.6B first and the 27B headline last; the pledge default is half of `maxBufferSize`, a per-buffer limit rather than GPU memory (52–56, 94); `measureBudgetGB` (63) is defined and never called; phones are pinned at 0.5 GB (96) and an iPad is classified as a Mac by UA substring (40–42). A 32 GB Mac therefore presents as a 2 GB device, first-hour users pick 27B because that is the pitch, see a disabled button, and conclude it does not work. The master plan's launch metrics (join success >95%, click-to-first-token <60 s) cannot be measured if a third of visitors bounce here.
+The first thing a new visitor does is open the site in whatever browser they have. index.html never mentions WebGPU; the only signal is "⚠ no WebGPU" on a peer card after a room already exists (room.js:125–126), followed by a start button stuck on "add 0.8 GB more". The second thing they do is paste a 4-letter code into Discord for a friend to retype: there is no deep link (`location.hash` is read once, for `#debug`, line 585). Third, the dropdown lists 0.6B first and the 27B headline last; the pledge default is half of `maxBufferSize`, a per-buffer limit rather than GPU memory (52–56, 94); `measureBudgetGB` (63) is defined and never called; phones are pinned at 0.5 GB (96) and an iPad is classified as a Mac by UA substring (40–42). A 32 GB Mac therefore presents as a 2 GB device, first-hour users pick 27B because that is the pitch, see a disabled button, and conclude it does not work. The master plan's launch metrics (join success >95%, click-to-first-token <60 s) cannot be measured if a third of visitors bounce here.
 
 ## Design
 - **Pre-flight on the landing page and join screen.** Run `probeGPU()` before "Create room" is enabled and render one line per outcome with its remedy: "WebGPU works: <vendor · arch>", "Chrome on Linux: enable chrome://flags/#enable-unsafe-webgpu", "Firefox: WebGPU is not enabled on this platform; use Chrome/Edge 113+ or Safari 26+", "iOS: update to Safari 26". Classify devices with `maxTouchPoints` / `userAgentData.mobile` so iPads take the laptop path with a measured budget.
@@ -18,8 +18,3 @@ The first thing an HN reader does is open swarmllm.ai in whatever browser they h
 - Opening `/r/ABCD` on a second device joins the room with no typing; scanning the QR does the same from a phone.
 - A 32 GB Mac's default pledge reflects a measurement; the 27B is preselected when the room can run it; an iPad is treated as a tablet.
 - `docs/bench-log.md` carries the per-class numbers the ladder quotes.
-```
-
-### `roadmap/15-signaling-broker.md`
-
-```markdown

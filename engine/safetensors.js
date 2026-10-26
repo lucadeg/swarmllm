@@ -27,8 +27,6 @@ export function tensorF32(t) {
   throw new Error("unsupported dtype " + t.dtype);
 }
 
-// ---------- tokenizer (byte-level BPE, same as ref.js) ----------
-
 export function shardTensorNames(cfg, [lo, hi], hasEmbed, hasHead) {
   const names = [];
   if (hasEmbed || hasHead) names.push("model.embed_tokens.weight");
@@ -98,8 +96,6 @@ export async function fetchModelShard(url, names, onProgress = () => {}) {
   return out;
 }
 
-// ---------- WGSL ----------
-
 export function weightsFromSafetensors(tensors, { lo, hi, hasEmbed, hasHead }) {
   const f32 = (name) => ({ kind: "f32", data: tensorF32(tensors[name]) });
   const layers = [];
@@ -122,5 +118,3 @@ export function weightsFromSafetensors(tensors, { lo, hi, hasEmbed, hasHead }) {
   if (hasHead) out.finalNorm = f32("model.norm.weight");
   return out;
 }
-
-// ---------- engine ----------

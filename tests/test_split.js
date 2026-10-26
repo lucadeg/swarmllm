@@ -1,7 +1,7 @@
 // Split-pipeline test: two engine shards (simulated peers) run half the model
-// each, hidden states hop between them — the exact protocol phase 2 runs over
-// WebRTC. Output must match the golden reference token-for-token.
-// usage: deno run --unstable-webgpu --allow-read test_split_deno.js
+// each, hidden states hop between them, the way the room's split chain runs
+// over WebRTC. Output must match the golden reference token-for-token.
+// usage: deno run --unstable-webgpu --allow-read tests/test_split.js
 import { parseSafetensors, makeTokenizer, DenseEngine, argmax } from "../engine/engine.js";
 
 const dir = new URL(".", import.meta.url).pathname;

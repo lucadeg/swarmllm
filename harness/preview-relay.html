@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>preview</title>
+<meta name="referrer" content="no-referrer">
+<style>html, body { margin: 0; height: 100%; background: #fff; } iframe { border: 0; width: 100%; height: 100%; display: block; }</style>
+<script>
+// The Code-mode preview's isolated host (harness/preview-frame.js, relay mode). The room page
+// loads this from another site, so the browser runs it, and the agent's app inside it, in a
+// process of its own: an infinite loop there stops this page's heartbeat instead of the room.
+// It takes documents from its parent ({ pvr: "doc", html }), shows each in a sandboxed child
+// (allow-scripts only), passes the child's messages up unchanged (the room checks them), and puts
+// the child back when it navigates itself away. Its base URL is this page, which holds nothing.
+(() => {
+  const P = window.parent;
+  if (P === window) return;
+  const up = (d) => { try { P.postMessage(d, "*"); } catch {} };
+  let child = null, html = "", expect = 0, navs = 0;
+  const show = () => {
+    if (!child) {
+      child = document.createElement("iframe");
+      child.setAttribute("sandbox", "allow-scripts");
+      child.setAttribute("allow", "");
+      child.setAttribute("referrerpolicy", "no-referrer");
+      // listen after inserting it: the empty frame's own about:blank load is not a navigation
+      (document.body || document.documentElement).append(child);
+      child.addEventListener("load", () => {
+        if (expect) { expect = 0; return; }
+        if (++navs > 3) { up({ pvr: "nav", stopped: true }); html = ""; }
+        else up({ pvr: "nav" });
+        show();
+      });
+    }
+    expect = 1;
+    child.srcdoc = html || "<!doctype html>";
+  };
+  addEventListener("message", (e) => {
+    const d = e.data;
+    if (e.source === P) {
+      if (d && d.pvr === "doc" && typeof d.html === "string") { html = d.html; navs = 0; show(); }
+      return;
+    }
+    if (child && e.source === child.contentWindow && d && typeof d === "object") up(d);
+  });
+  setInterval(() => up({ pvr: "beat" }), 1000);
+  up({ pvr: "hello" });
+})();
+</script>
+<body></body>

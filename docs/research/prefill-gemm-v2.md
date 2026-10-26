@@ -1,4 +1,4 @@
-# SwarmLLM prefill GEMM: implementation-ready design
+# Pooled prefill GEMM (then called SwarmLLM): implementation-ready design
 
 **Scope.** A complete WGSL kernel (row-stationary Q4_0 GEMM, 16 token columns) that replaces the batched GEMV on the prefill path, the integration path through the existing `_dop` twin-kernel hook, and a validation plan. Everything measured on the GB10 (DGX Spark, Deno 2.9.5/wgpu Vulkan) with the GPU otherwise idle. Claims not backed by a measurement in this document are marked **UNCERTAIN**.
 

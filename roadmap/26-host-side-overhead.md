@@ -1,6 +1,6 @@
 # 26 · Host-side overhead: encode-ahead, one-submit speculation, GPU sampling, fused glue
 
-**Phase:** next · **Status:** planned · _P2 · design: [docs/research/decode-overhead-and-wire.md](../docs/research/decode-overhead-and-wire.md) §1_
+**Phase:** speed · **Status:** in part · one-submit draft chain (opt-in `?draftchain=1`) and fused attention glue landed · open: GPU sampling, encode-ahead · _P2 · design: [docs/archive/research/decode-overhead-and-wire.md](../docs/archive/research/decode-overhead-and-wire.md) §1_
 
 ## Why
 

@@ -1,0 +1,106 @@
+---
+title: Code mode
+eyebrow: Use it
+description: Switch a room to Code and ask for an app. The room's model writes the files, runs them in a sandboxed preview and fixes its own errors.
+sidebar:
+  label: Code mode
+  order: 1
+---
+{/*
+  Sources (origin/main):
+  - README.md "Code mode"; SECURITY.md "Code mode"
+  - room/code.js (QUEUE_MAX 6, two per member, first request creates a project, useProject() auto-approve on for
+    browser projects and off for folders, newTask(), SHARE_KEEP 3, share cards)
+  - harness/projects.js (browser and folder projects; showDirectoryPicker = Chrome/Edge desktop)
+  - harness/workspace.js (secretPath, riskyPath, SKIP_DIRS); harness/templates.js (four templates, three files each)
+  - harness/preview.js (DEFAULT_PORT 5173, 250 ms re-snapshot); harness/preview-build.js (in-memory storage, no allow-forms)
+  - room/code-export.js, harness/export.js, harness/app-export.js (Project .zip, One HTML file, share sheet on phones)
+  - p2p.html: Chat/Code switch, New, Open folder…, Auto-approve edits, New task, preview bar, Console, Send to agent
+*/}
+
+import { Steps } from '@astrojs/starlight/components';
+
+Code mode turns a room into a small coding agent. Ask for an app, like "build a snake game". The room's model writes the files, runs the page in a sandboxed preview, reads its console errors and fixes them. Everyone in the room can watch and run the same preview.
+
+It builds static web apps: HTML, CSS and JavaScript. There is no shell and no server code.
+
+## Build your first app
+
+<Steps>
+
+1. **Start a model.** In a room, pick a model and press **Start the model**. **Code** turns on once the model runs.
+
+2. **Press Code** in the header.
+
+3. **Ask for something**, for example `build a snake game`, and press **Send**. The first request creates a project named from your words.
+
+4. **Watch it work.** The timeline shows each step, each tool call and a diff for every file. The preview opens on the right.
+
+5. **Ask for changes**, like `make the snake faster every 5 points`. The agent remembers the conversation until you press **New task**. Files and previews stay.
+
+</Steps>
+
+## Templates
+
+Small models do much better changing an app that already runs. Press **New**, pick a template in the menu next to the name, and press Enter. The app runs straight away, and on the host the prompt box holds a first change to try.
+
+| Template | What it is |
+|---|---|
+| **Game** | Catch the falling stars on a canvas, with score and lives. |
+| **Dashboard** | Stat cards, a bar chart and a table. |
+| **Form app** | A sign-up form with checks and a saved list. |
+| **Landing page** | A hero, three features and an email sign-up box. |
+
+**Empty project** (the default) starts with no files.
+
+## Previews
+
+The app is served on a virtual port, `:5173`. Nothing opens a real port. When a file changes, the preview reloads by itself.
+
+- **Reload** loads the files again. **Open** shows the app full size in a new tab, still sandboxed.
+- The **Console** under the preview shows logs and errors. The agent reads them too. **Send to agent** asks it to fix the errors.
+- The app can't reach the room's page, your storage or the network (except two script CDNs and Google Fonts).
+- A `<form>` submit never fires in the sandbox. Ask for a button instead.
+- `localStorage` works, but is empty again after each reload.
+
+How the sandbox works: [Preview sandbox](/docs/code/previews).
+
+## Files and approvals
+
+A project lives on the room's host device.
+
+- **Saved in this browser** (default): edits apply straight away. **Auto-approve edits** is on.
+- **Folder on disk**: the host picks one with **Open folder…** (Chrome and Edge on desktop). Each edit waits for **Approve**, **Reject…** or **Allow edits for this task**.
+
+In a folder, files that could run commands (`package.json`, `Makefile`, shell scripts) always ask. The agent can't see hidden or key files (`.env`, `.git`, `*.pem`) at all.
+
+The host can also open any file in **Files**, edit it and save.
+
+## Who can use Code
+
+Anyone in the room can send requests when **Who sees the chat** is set to everyone. Otherwise Code belongs to the host.
+
+- Requests run one at a time. Up to 6 wait, at most 2 per person.
+- The asker or the host can press **Stop**.
+- Only the host can open a folder from disk.
+
+On a phone, Code has three tabs: **Agent**, **Preview** and **Files**.
+
+## Download
+
+Press **Download** above the file list:
+
+- **Project .zip**: every file. Hidden and key files are left out.
+- **One HTML file**: the app in one file you can double-click. It stays sandboxed.
+
+Other devices download the files of the preview on their screen. On a phone you get the share sheet.
+
+## Share with the room
+
+Press **Share** in the preview bar. Every device gets a card with **Download** and **Open full screen**. Each device keeps the 3 latest shared versions.
+
+## Details
+
+- [The agent](/docs/code/agent): its tools, how a request runs, why it stops.
+- [Preview sandbox](/docs/code/previews): the virtual port, limits, the console, previews on other devices.
+- [Security model](/docs/internals/security): the full threat model.

@@ -1,9 +1,9 @@
 # 09 · Overlapping laps across the network
 
-**Phase:** later · **Status:** research
+**Phase:** speed · **Status:** research · per-hop telemetry, its blocker, has landed
 
 ## Why
-Cross-network decode pays one round trip per lap while every device waits. Speculation already carries up to 8 tokens per lap; the next step is keeping the pipeline full: start verifying the next draft chain before the current verdict returns, and cancel it if the verdict rejects (PipeInfer reports up to 2.15× on slow interconnects).
+Cross-network decode pays one round trip per lap while every device waits. Speculation already carries up to 16 tokens per lap; the next step is keeping the pipeline full: start verifying the next draft chain before the current verdict returns, and cancel it if the verdict rejects (PipeInfer reports up to 2.15× on slow interconnects).
 
 ## Design sketch
 - The host launches lap N+1 on the assumption that lap N accepts fully; peers need two laps' worth of rollback slots and a versioned cancel message.
@@ -14,4 +14,4 @@ Cross-network decode pays one round trip per lap while every device waits. Specu
 
 ## Update (Sep 2026 research round)
 
-Design and expected-gain model in [docs/research/network-scheduler.md](../docs/research/network-scheduler.md) SS3: 1.29-1.52x at 100 ms RTT with K=3 and two laps in flight. Blocked on per-hop telemetry (roadmap 25).
+Design and expected-gain model in [docs/archive/research/network-scheduler.md](../docs/archive/research/network-scheduler.md) SS3: 1.29-1.52x at 100 ms RTT with K=3 and two laps in flight. Per-hop telemetry (roadmap 25), which this was waiting on, has landed.

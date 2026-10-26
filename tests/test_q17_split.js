@@ -1,4 +1,4 @@
-// Reproduce the user's 2-Mac scenario: Qwen3-0.6B q8 GGUF split across two shards.
+// Reproduce the user's 2-Mac scenario: Qwen3 1.7B Q8_0 GGUF (models/qwen17) split across two shards.
 import { makeTokenizer, DenseEngine, argmax } from "../engine/engine.js";
 import { parseGGUFHeader, ggufWeights } from "../engine/gguf.js";
 
@@ -42,3 +42,4 @@ for (let i = 0; i < golden.generated.length; i++) { const n = argmax(logits); ge
 console.log("generated:", JSON.stringify(tok.decode(gen)));
 console.log("golden   :", JSON.stringify(tok.decode(golden.generated)));
 console.log(JSON.stringify(gen) === JSON.stringify(golden.generated) ? "QWEN SPLIT PASS" : "QWEN SPLIT FAIL");
+Deno.exit(JSON.stringify(gen) === JSON.stringify(golden.generated) ? 0 : 1);

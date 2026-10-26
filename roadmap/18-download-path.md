@@ -1,6 +1,6 @@
 # 18 · Download path: Hugging Face backoff and mirrors, parallel range streams, phone cache
 
-**Phase:** now · **Status:** planned · _now · days · high_
+**Phase:** multi-device · **Status:** parallel range fetch, prefetch and weights from other devices landed · open: MB/s and time left on the load bar (#57), backoff and mirrors
 
 ## Why
 
@@ -9,7 +9,7 @@ Merges: *Hugging Face fetch resilience*; *Weight download: parallel range stream
 
 ## Design
 
-See the merged proposals in [docs/roadmap-review.md](../docs/roadmap-review.md) under item 18; turn them into a design note before building.
+See the merged proposals in [docs/archive/roadmap-review.md](../docs/archive/roadmap-review.md) under item 18; turn them into a design note before building.
 
 ## Done when
 

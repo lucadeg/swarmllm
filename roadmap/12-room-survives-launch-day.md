@@ -1,6 +1,6 @@
 # 12 · Stop, fail fast, re-deal: the room survives launch day
 
-**Phase:** now · **Status:** planned
+**Phase:** done · **Status:** landed · Stop, fail fast, manual re-deal, guest "room over" and the killed-tab message all shipped. Automatic re-deal on join and leave moved to 03 (#3).
 
 ## Why
 Two ways a room dies on Monday, both permanent. A friend closes their tab mid-answer: `conn.on("close")` (room.js:190–198) only removes the card, so the host waits out the 30 s / 90 s lap timeouts (865, 930, 968), `aiGenerate`'s catch leaves `ai.engine` set (1029–1033), `aiStart` early-returns on `ai.engine` (715), and nothing re-enables the start button (only `updateNeed` when `!ai.engine`, or the load-failure path at 805). Everyone reloads and re-types the code; guests whose host left still read "cluster online". Or a wrong-direction answer: the decode loops run to EOS or a literal 400 tokens (999, 1016) with no abort path, and at 3.5–6 tok/s cross-network that locks every screen behind `ai-busy` (1156) for up to two minutes. Roadmap 03 (spare copies, replay) is the right end state but is weeks away; this is the floor it sits on, and the master plan's NEXT metric ("median room survives one peer departure") is unreachable without it.
@@ -25,8 +25,3 @@ Two ways a room dies on Monday, both permanent. A friend closes their tab mid-an
 - A device joining a three-device room mid-answer is serving a slice by the next question without any reload, and joining during an answer never changes that answer's output.
 - A device leaving mid-answer stops that answer within 2 s; the next question is answered by the remaining devices, with the departed range reloaded from cache where any device still has it.
 - `docs/protocol.md` documents `ai-stop` and the degraded state. Fail-fast, the guest message and the start-button fix are ordinary bug-fix PRs and land first.
-```
-
-### `roadmap/13-conversation.md`
-
-```markdown

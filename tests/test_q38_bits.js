@@ -1,0 +1,74 @@
+// 27B bit-exactness fingerprint: hashes of every logit of a batched prefill (16 columns, as the room),
+// plain greedy decode and speculative steps. Run on two branches: equal hashes = bit-identical outputs.
+//   cd tests && deno run --unstable-webgpu --allow-read --allow-env --allow-write=$HOME/.cache/swarmllm-weights test_q38_bits.js
+// ATTN_PREFILL_TILE=0 (read by load_model.js) turns the tiled prefill attention off, the one accepted deviation.
+// The prompt is a frozen fixture (golden/q38_bits_prompt.txt, the first 150 lines of engine/gguf.js as of
+// kopt/combined). It used to be read live from engine/gguf.js, so a comment edit there changed the prompt and
+// the hashes. Reference (GB10, attnDecode v2, the default since perf/kf-long-context): ATTN_PREFILL_TILE=0 ->
+// BITS plain f0537158 hidden 5d287854; default -> c26dbc5 / 3177f9f1. With ATTN_DECODE=v1 (attn_flash, the
+// default before): 4f70a9ca / 5eb28e41 and 4cac59d8 / a67b7bcd. Greedy and spec tokens are the same in all four.
+// Since perf/prefill-dp4a-wide-gemm-27b the dense default prefill is the f32 wide GEMM (ubatch 256, +24-29% prefill,
+// logits relDiff 4e-5..1.4e-4 vs the 16-column path): default -> 4612ece1 / aeb06a4d. PREFILL_UBATCH=0 (the 16-column
+// path) still gives c26dbc5 / 3177f9f1 (and f0537158 / 5d287854 with ATTN_PREFILL_TILE=0); same greedy and spec tokens.
+// Since perf/dp4a-eval (#309) the dense default on NVIDIA is the dp4a wide GEMM (int8 dot products on Q8_1-quantized
+// activations, passed tests/eval_dp4a.js): default -> 4dc814b1 / 4f075117. PREFILL_DP4A=0 (the f32 wide GEMM) still gives
+// 4612ece1 / aeb06a4d and PREFILL_UBATCH=0 c26dbc5 / 3177f9f1; same greedy and spec tokens in all three.
+import { Qwen35Engine } from "../engine/qwen35.js";
+import { argmax } from "../engine/engine.js";
+import { openGGUF, Q38_PATH, MOE_PATH, gpuDevice, offloadFromEnv } from "./load_model.js";
+import { gpuGreedy } from "./gpusample_check.js";
+
+// MODEL=moe: the same fingerprint for the 35B MoE (no reference list here: compare against main on the same machine)
+const model = openGGUF(Deno.env.get("MODEL") === "moe" ? MOE_PATH : Q38_PATH);
+const { device } = await gpuDevice();
+const L = model.trunkLayers, tok = model.tokenizer();
+// MODEL=moe OFFLOAD=all OFFLOAD_SLOTS=16 (tests/load_model.js offloadFromEnv): expert offload must give the same hashes
+// (and with OFFLOAD_DISK=all or a range: those layers' experts read from the file when used, the disk tier)
+const experts = await offloadFromEnv(device, L, model);
+const weights = await model.weights({ lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: true, experts });
+const eng = await Qwen35Engine.create({ device, meta: model.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 2048, batchCols: 16, coopRowsB: 1,
+  layerFuse: { "0": false, "1": true }[Deno.env.get("LAYER_FUSE")] });   // LAYER_FUSE=0 / 1: the decode layer fusions off / on (unset: the engine default; must not change a bit)
+// OFFLOAD_SPEC=1: the speculative offloaded decode (engine cutSpec); =always: every layer but the last speculates on
+// every token (cutSpecTheta 2), so most windows roll back: both must still give the same hashes
+const SPEC = Deno.env.get("OFFLOAD_SPEC");
+if (SPEC && SPEC !== "0") Object.assign(eng, { cutSpec: true, ...(SPEC === "always" ? { cutSpecTheta: 2 } : {}) });
+if (Deno.env.get("OFFLOAD_PIPE") === "1") eng.cutPipe = true;   // the pipelined cut (engine cutPipe, opt-in)
+console.log(`attnDecode ${eng.attnDecode} layerFuse ${JSON.stringify(eng.layerFuse)} attn_dec_combine_g ${!!eng.pipes.attn_dec_combine_g}`);
+const h = (arrs) => { let x = 0x811c9dc5; for (const a of arrs) { const u = new Uint32Array(a.buffer, a.byteOffset, a.length); for (let i = 0; i < u.length; i++) x = Math.imul(x ^ u[i], 0x01000193) >>> 0; } return x.toString(16); };
+const ids = tok.encode(await Deno.readTextFile(new URL("./golden/q38_bits_prompt.txt", import.meta.url))).slice(0, 300);
+if (ids.length < 300) throw new Error(`prompt fixture too short: ${ids.length} tokens`);
+// plain: batched prefill + 12 greedy tokens
+eng.reset(); if (eng.mtp) eng.mtpFill = true;
+await eng.prefillTokens(ids.slice(0, -1));
+let lg = await eng.forwardToken(ids.at(-1));
+const plainL = [lg], plain = [argmax(lg)];
+for (let i = 0; i < 12; i++) { lg = await eng.forwardToken(plain.at(-1)); plainL.push(lg); plain.push(argmax(lg)); }
+console.log(`plain: ${JSON.stringify(tok.decode(plain))} logits hash ${h(plainL)}`);
+// speculative from the same prompt
+eng.reset(); eng.mtpFill = true;
+await eng.prefillTokens(ids.slice(0, -1));
+lg = await eng.forwardToken(ids.at(-1));
+const sp = [argmax(lg)];
+while (sp.length < 13) { for (const t of await eng.specStep(sp.at(-1), argmax, 3)) sp.push(t); }
+console.log(`spec : ${JSON.stringify(tok.decode(sp.slice(0, 13)))} ${sp.slice(0, 13).every((t, i) => t === plain[i]) ? "== plain" : "DIFFERS from plain"} tokens ${sp.slice(0, 13).join(",")}`);
+// the trunk hidden after all of it (spec state included)
+const x = await eng._readback(eng.x, eng.stageX, eng.dims.dim);
+console.log(`BITS plain ${h(plainL)} hidden ${h([x])}`);
+// GPU sampling (engine default): plain greedy through forwardTokenIds and speculative steps with a .gpu
+// sampler must give the same tokens as the logits path above (sampling never changes the bits)
+let ok = sp.slice(0, 13).every((t, i) => t === plain[i]);
+if (eng.gpuSample) {
+  eng.reset(); if (eng.mtp) eng.mtpFill = true;
+  await eng.prefillTokens(ids.slice(0, -1));
+  const gp = [gpuGreedy(await eng.forwardTokenIds(ids.at(-1)))];
+  for (let i = 0; i < 12; i++) gp.push(gpuGreedy(await eng.forwardTokenIds(gp.at(-1))));
+  eng.reset(); eng.mtpFill = true;
+  await eng.prefillTokens(ids.slice(0, -1));
+  const gs = [gpuGreedy(await eng.forwardTokenIds(ids.at(-1)))];
+  while (gs.length < 13) { for (const t of await eng.specStep(gs.at(-1), gpuGreedy, 3)) gs.push(t); }
+  const same = gp.every((t, i) => t === plain[i]) && gs.slice(0, 13).every((t, i) => t === plain[i]);
+  console.log(`GPU sampling: plain ${gp.join(",")} spec ${gs.slice(0, 13).join(",")} ${same ? "== logits path" : "DIFFERS from the logits path"}`);
+  ok &&= same;
+}
+if (eng.experts) console.log(eng.experts.summary());
+Deno.exit(ok ? 0 : 1);

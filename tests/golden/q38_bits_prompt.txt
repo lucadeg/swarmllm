@@ -1,0 +1,150 @@
+// GGUF loading: header and tensor parsing, tokenizer extraction, Q4_0/Q8_0
+// repacking into GPU-friendly layouts (packed nibbles + f16 scales), and
+// streaming upload straight into GPU buffers. See docs/models.md.
+// GGUF (v2/v3) parser + Q8_0 dequant. Shared by the CPU reference and the
+// WebGPU engine. Returns tensor byte ranges so browser peers can range-fetch
+// only their layers, same trick as the safetensors path.
+
+const T_U8 = 0, T_I8 = 1, T_U16 = 2, T_I16 = 3, T_U32 = 4, T_I32 = 5, T_F32 = 6,
+  T_BOOL = 7, T_STR = 8, T_ARR = 9, T_U64 = 10, T_I64 = 11, T_F64 = 12;
+
+// ggml tensor types we support
+export const GGML_F32 = 0, GGML_F16 = 1, GGML_Q8_0 = 8;
+export const QK8_0 = 32;                 // elems per Q8_0 block
+export const Q8_0_BLOCK_BYTES = 34;      // f16 scale + 32 int8
+
+const _f16buf = new Float32Array(1), _f16u32 = new Uint32Array(_f16buf.buffer);
+export function f32ToF16(v) {
+  // IEEE f32 -> f16 bits, round-to-nearest-even. The scratch views are hoisted:
+  // this is called once per element of every wire frame and every quantized block.
+  _f16buf[0] = v;
+  const x = _f16u32[0];
+  const sign = (x >>> 16) & 0x8000;
+  let e = (x >>> 23) & 0xff, m = x & 0x7fffff;
+  if (e === 0xff) return sign | 0x7c00 | (m ? 0x200 : 0);
+  e = e - 127 + 15;
+  if (e >= 0x1f) return sign | 0x7c00;
+  if (e <= 0) {
+    if (e < -10) return sign;
+    m = (m | 0x800000) >> (1 - e);
+    return sign | ((m + 0x1000) >> 13);
+  }
+  // '+' not '|': a mantissa that rounds up to 0x400 must CARRY into the
+  // exponent. With '|' the carry was dropped whenever the exponent's low bit
+  // was already set, silently halving ~0.03% of all values (e.g. -1.99999 -> -1).
+  return sign | ((e << 10) + ((m + 0x1000) >> 13));
+}
+
+export function f16ToF32(h) {
+  const s = (h & 0x8000) ? -1 : 1, e = (h >> 10) & 0x1f, m = h & 0x3ff;
+  if (e === 0) return s * m * 2 ** -24;
+  if (e === 31) return m ? NaN : s * Infinity;
+  return s * (1 + m / 1024) * 2 ** (e - 15);
+}
+
+// Parse the GGUF header from an ArrayBuffer that contains AT LEAST the full
+// header (metadata + tensor infos). Tensor data may be absent (range-fetch).
+// opts.skipTokenizer: walk past tokenizer.* arrays without building 500k JS
+// strings (100+ MB of heap a worker shard never uses; phones cannot afford it)
+export function parseGGUFHeader(buf, opts = {}) {
+  const dv = new DataView(buf);
+  let off = 0;
+  const u32 = () => { const v = dv.getUint32(off, true); off += 4; return v; };
+  const u64 = () => { const v = Number(dv.getBigUint64(off, true)); off += 8; return v; };
+  const i64 = () => { const v = Number(dv.getBigInt64(off, true)); off += 8; return v; };
+  const f32v = () => { const v = dv.getFloat32(off, true); off += 4; return v; };
+  const f64v = () => { const v = dv.getFloat64(off, true); off += 8; return v; };
+  const str = (skip) => {
+    const n = u64();
+    const s = skip ? undefined : new TextDecoder().decode(new Uint8Array(buf, off, n));
+    off += n;
+    return s;
+  };
+  const value = (t, skip = false) => {
+    switch (t) {
+      case T_U8: return dv.getUint8(off++);
+      case T_I8: return dv.getInt8(off++);
+      case T_U16: { const v = dv.getUint16(off, true); off += 2; return v; }
+      case T_I16: { const v = dv.getInt16(off, true); off += 2; return v; }
+      case T_U32: return u32();
+      case T_I32: { const v = dv.getInt32(off, true); off += 4; return v; }
+      case T_F32: return f32v();
+      case T_BOOL: return !!dv.getUint8(off++);
+      case T_STR: return str(skip);
+      case T_U64: return u64();
+      case T_I64: return i64();
+      case T_F64: return f64v();
+      case T_ARR: {
+        const et = u32(), n = u64(), out = skip ? undefined : new Array(n);
+        for (let i = 0; i < n; i++) { const v = value(et, skip); if (!skip) out[i] = v; }
+        return out;
+      }
+      default: throw new Error("bad gguf value type " + t);
+    }
+  };
+
+  if (u32() !== 0x46554747) throw new Error("not a GGUF file");
+  const version = u32();
+  if (version < 2) throw new Error("gguf v1 unsupported");
+  const nTensors = u64();
+  const nKV = u64();
+  const meta = {};
+  for (let i = 0; i < nKV; i++) {
+    const key = str();
+    const skip = !!opts.skipTokenizer && key.startsWith("tokenizer.");
+    const v = value(u32(), skip);
+    if (!skip) meta[key] = v;
+  }
+  const infos = [];
+  for (let i = 0; i < nTensors; i++) {
+    const name = str();
+    const nd = u32();
+    const dims = [];
+    for (let d = 0; d < nd; d++) dims.push(u64());
+    const ggmlType = u32();
+    const offset = u64();
+    // ggml dims are [ne0(=innermost/cols), ne1(rows), ...]; torch order is reversed
+    infos.push({ name, shape: dims.slice().reverse(), ggmlType, offset });
+  }
+  const align = meta["general.alignment"] || 32;
+  const dataStart = Math.ceil(off / align) * align;
+  const tensors = {};
+  for (const t of infos) {
+    const n = t.shape.reduce((a, b) => a * b, 1);
+    const bytes = ggmlTypeBytes(t.ggmlType, n); // -1 for unsupported types
+    tensors[t.name] = { ...t, nElems: n, byteOffset: dataStart + t.offset, byteLength: bytes };
+  }
+  // the Qwen3.5+ MoE files use their own architecture name (keys like "qwen35moe.block_count");
+  // alias them under "qwen35." so the one engine reads both, dense and MoE
+  const arch = meta["general.architecture"];
+  if (typeof arch === "string" && arch !== "qwen35" && /^qwen3[5-9]/.test(arch))
+    for (const k of Object.keys(meta)) if (k.startsWith(arch + ".")) { const a = "qwen35." + k.slice(arch.length + 1); if (!(a in meta)) meta[a] = meta[k]; }
+  return { meta, tensors, dataStart, headerBytes: off };
+}
+
+// Dequant a tensor's raw bytes to Float32Array.
+export function ggufToF32(info, bytes /* Uint8Array of the tensor's data */) {
+  const n = info.nElems;
+  if (info.ggmlType === GGML_F32)
+    return new Float32Array(bytes.buffer, bytes.byteOffset, n);
+  if (info.ggmlType === GGML_F16) {
+    const u16 = new Uint16Array(bytes.buffer, bytes.byteOffset, n);
+    const out = new Float32Array(n);
+    for (let i = 0; i < n; i++) out[i] = f16ToF32(u16[i]);
+    return out;
+  }
+  if (info.ggmlType === GGML_Q8_0) {
+    const out = new Float32Array(n);
+    const nb = n / QK8_0;
+    for (let b = 0; b < nb; b++) {
+      const base = b * Q8_0_BLOCK_BYTES;
+      const scale = f16ToF32(bytes[base] | (bytes[base + 1] << 8));
+      for (let i = 0; i < QK8_0; i++) {
+        const q = bytes[base + 2 + i];
+        out[b * QK8_0 + i] = scale * (q > 127 ? q - 256 : q);
+      }
+    }
+    return out;
+  }
+  throw new Error("unsupported ggml type " + info.ggmlType);
+}

@@ -1,6 +1,11 @@
 // Device autotune: time a few cooperative-GEMV shapes on the real GPU at load and keep the winner.
+// Times the quantized GEMV (the hot kernel) at a few candidate workgroup
+// shapes on synthetic buffers sized like a real layer. Wall-clock around
+// onSubmittedWorkDone; never timestamp-query (enabling it alone has measured
+// multi-x slowdowns). ~1s total at model load.
 import { WGSL } from "./wgsl/base.js";
 import { probeUnpack, coopWGSL } from "./wgsl/coop.js";
+import { moduleSet } from "./wgsl/prune.js";
 
 export async function autotuneCoop(device, { dIn = 5120, dOut = 17408, kind = "q4" } = {}) {
   const candidates = [[256, 4], [128, 4], [256, 8], [128, 8], [64, 4]];
@@ -19,7 +24,7 @@ export async function autotuneCoop(device, { dIn = 5120, dOut = 17408, kind = "q
   for (const [wg, rows] of candidates) {
     try {
       const entry = kind === "q4" ? "matvec_q4_coop" : "matvec_q8_coop";
-      const mod = device.createShaderModule({ code: WGSL + coopWGSL(wg, rows, 64, 4, 4, await probeUnpack(device)) });
+      const mod = moduleSet(device, WGSL + coopWGSL(wg, rows, 64, 4, 4, await probeUnpack(device)))(entry);
       const l0 = device.createBindGroupLayout({ entries: [0, 1].map((b) => ({ binding: b, visibility: C, buffer: { type: "uniform" } })) });
       const l1 = device.createBindGroupLayout({ entries: ["read-only-storage", "read-only-storage", "read-only-storage", "storage", "uniform"].map((t, i) => ({ binding: i, visibility: C, buffer: { type: t } })) });
       const pipe = await device.createComputePipelineAsync({
@@ -37,6 +42,13 @@ export async function autotuneCoop(device, { dIn = 5120, dOut = 17408, kind = "q
         device.queue.submit([enc.finish()]);
         return device.queue.onSubmittedWorkDone();
       };
+      // a device that needs >20 ms for one of these is a software rasterizer (SwiftShader) or
+      // hopeless anyway: timing 500 dispatches would take minutes, so keep the default
+      if (!results.length) {
+        const t1 = performance.now();
+        await run(1);
+        if (performance.now() - t1 > 20) { for (const b of [qs, sc, x, y]) b.destroy(); return { wg: 256, rows: 4, results, skipped: "slow device" }; }
+      }
       // warm up: GPUs ramp clocks under sustained load; short bursts measure the ramp
       const tw = performance.now();
       while (performance.now() - tw < (results.length ? 40 : 250)) await run(20);

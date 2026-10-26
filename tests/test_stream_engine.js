@@ -16,7 +16,7 @@ const run = async (eng, text) => { const ids = tok.encode(text); const out = [];
 const W1 = await qwen35Weights(G, bytesOf, opts);
 const e1 = await Qwen35Engine.create({ device, meta: G.meta, weights: W1, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 64 });
 const a = await run(e1, "Write the Python code for Two Sum.");
-// streamed, like p2p.html
+// streamed, like room.js
 const G2 = { ...G, streamEntry: (info) => streamEntryToGPU(device, info, async (i) => new Response(new Blob([await readAt(i.byteOffset, i.byteLength)]).stream(), { status: 206 }), { staging: 8 << 20 }) };
 const W2 = await qwen35Weights(G2, bytesOf, opts, () => {}, (e, name) => gpuUploadEntry(device, e, name === GGML_EMBED));
 const e2 = await Qwen35Engine.create({ device, meta: G.meta, weights: W2, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 64, vocab: G.tensors[GGML_EMBED].shape[0] });
@@ -25,3 +25,4 @@ const b = await run(e2, "Write the Python code for Two Sum.");
 await run(e2, "junk"); e2.reset();
 const c = await run(e2, "Write the Python code for Two Sum.");
 console.log(a === b && b === c ? "STREAM ENGINE PASS ✓" : "STREAM ENGINE FAIL\n" + a + "\n" + b + "\n" + c);
+Deno.exit(a === b && b === c ? 0 : 1);

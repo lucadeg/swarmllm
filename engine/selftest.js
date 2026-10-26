@@ -113,8 +113,13 @@ export async function kernelMicroTests(device) {
   const BG = eng.layerBGs[0];
   const stage = (n) => device.createBuffer({ size: n * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
   const run = (fn) => { const enc = device.createCommandEncoder(); const p = enc.beginComputePass(); fn(p); p.end(); device.queue.submit([enc.finish()]); };
-  const rb = (buf, n) => eng._readback(buf, stage(n), n);
-  const wr = (buf, arr) => device.queue.writeBuffer(buf, 0, arr);
+  // q/k/v may be views into one merged buffer (DenseEngine mergeQKV): read and write at the view's offset
+  const rb = async (buf, n) => {
+    const [b, off] = DenseEngine._raw(buf), st = stage(n);
+    const enc = device.createCommandEncoder(); enc.copyBufferToBuffer(b, off, st, 0, n * 4); device.queue.submit([enc.finish()]);
+    await st.mapAsync(GPUMapMode.READ); const out = Float32Array.from(new Float32Array(st.getMappedRange(), 0, n)); st.unmap(); return out;
+  };
+  const wr = (buf, arr) => { const [b, off] = DenseEngine._raw(buf); device.queue.writeBuffer(b, off, arr); };
   const cmp = (got, want) => {
     let md = 0, sc = 1e-6, nan = false;
     for (let i = 0; i < want.length; i++) { if (!Number.isFinite(got[i])) nan = true; md = Math.max(md, Math.abs(got[i] - want[i])); sc = Math.max(sc, Math.abs(want[i])); }

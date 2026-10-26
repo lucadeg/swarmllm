@@ -3,592 +3,348 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<title>SwarmLLM · mesh inference</title>
-<meta name="description" content="Pool your phone, laptop, and friends' devices into one room, and run AI models none of them could hold alone.">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<style>
-  :root {
-    --paper: #f5f4ee;
-    --paper-2: #fbfaf5;
-    --ink: #16171c;
-    --faint: #c4c0b1;
-    --muted: #8b877a;
-    --line: #e1ded2;
-    --accent: #2b4eff;
-    --sans: "Space Grotesk", -apple-system, sans-serif;
-    --mono: "JetBrains Mono", ui-monospace, monospace;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  html { scroll-behavior: smooth; }
-  body {
-    background: var(--paper);
-    color: var(--ink);
-    font-family: var(--sans);
-    -webkit-font-smoothing: antialiased;
-    overflow-x: hidden;
-  }
-  ::selection { background: var(--accent); color: #fff; }
-
-  #stage { position: fixed; inset: 0; z-index: 0; }
-  #mesh { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: pan-y; pointer-events: none; }
-
-  nav {
-    position: fixed; top: 0; left: 0; right: 0; z-index: 40;
-    display: flex; align-items: center;
-    padding: 22px max(28px, 4vw);
-    transition: all 0.3s;
-  }
-  nav.scrolled {
-    padding: 14px max(28px, 4vw);
-    background: color-mix(in srgb, var(--paper) 80%, transparent);
-    backdrop-filter: blur(14px);
-    border-bottom: 1px solid var(--line);
-  }
-  .wordmark { font-weight: 700; font-size: 20px; letter-spacing: -0.02em; color: inherit; text-decoration: none; }
-  .wordmark em { font-style: normal; color: var(--accent); }
-  .spacer { flex: 1; }
-  .navlink { font-family: var(--mono); font-size: 12px; color: var(--muted); text-decoration: none; margin-right: 26px; transition: color 0.2s; }
-  .navlink:hover { color: var(--ink); }
-  .gh { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 12px; color: var(--muted); text-decoration: none; margin-right: 22px; transition: color 0.2s; }
-  .gh:hover { color: var(--ink); }
-  .gh svg { display: block; }
-
-  .cta {
-    display: inline-flex; align-items: center; gap: 10px;
-    font-family: var(--mono); font-size: 14px; font-weight: 500;
-    padding: 15px 28px; border-radius: 100px;
-    background: var(--ink); color: var(--paper);
-    text-decoration: none; border: none; cursor: pointer;
-    transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-  }
-  .cta:hover { background: var(--accent); transform: translateY(-2px); box-shadow: 0 10px 34px rgba(43,78,255,0.35); }
-  .cta .arrow { transition: transform 0.3s; }
-  .cta:hover .arrow { transform: translateX(4px); }
-  nav .cta { padding: 10px 20px; font-size: 12px; }
-
-  /* hero */
-  #hero { position: relative; z-index: 1; height: 100svh; pointer-events: none; }
-  .copy {
-    position: absolute;
-    left: max(28px, 5vw);
-    top: 50%;
-    transform: translateY(-54%);
-    max-width: 640px;
-  }
-  .copy a { pointer-events: auto; }
-  .kicker {
-    font-family: var(--mono); font-size: 11px; letter-spacing: 0.22em;
-    color: var(--muted); margin-bottom: 26px;
-  }
-  h1 {
-    font-size: clamp(46px, 6.4vw, 92px);
-    line-height: 0.98; font-weight: 700; letter-spacing: -0.04em;
-    margin-bottom: 26px;
-  }
-  h1 .dim { color: var(--faint); }
-  h1 .acc { color: var(--accent); }
-  .sub { font-size: 17px; color: var(--muted); max-width: 38ch; margin-bottom: 38px; line-height: 1.6; }
-  .sub b { color: var(--ink); font-weight: 500; }
-
-  #strip {
-    position: absolute; bottom: 0; left: 0; right: 0;
-    display: flex; align-items: center; gap: 8px;
-    padding: 20px max(28px, 4vw);
-    font-family: var(--mono); font-size: 11px; color: var(--muted);
-  }
-  #strip .sep { color: var(--faint); margin: 0 8px; }
-
-
-  #demo {
-    height: 440px;
-    display: flex; flex-direction: column;
-    background: var(--paper-2);
-    border: 1px solid var(--line); border-radius: 20px;
-    overflow: hidden;
-    box-shadow: 0 2px 6px rgba(20,21,26,0.04), 0 24px 70px rgba(20,21,26,0.09);
-  }
-  .demo-bar {
-    display: flex; align-items: center; gap: 12px;
-    padding: 13px 18px;
-    border-bottom: 1px solid var(--line);
-    background: color-mix(in srgb, var(--paper-2) 60%, var(--paper));
-    flex: none;
-  }
-  .wdots { display: inline-flex; gap: 6px; }
-  .wdots i { width: 9px; height: 9px; border-radius: 50%; background: var(--line); }
-  .wdots i:first-child { background: var(--faint); }
-  .demo-title { font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; color: var(--muted); }
-  #demo-live {
-    margin-left: auto;
-    display: inline-flex; align-items: center; gap: 7px;
-    font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em;
-    color: var(--accent); background: none; border: none; padding: 0;
-    cursor: default;
-  }
-  #demo-live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: blink 1.6s infinite; }
-  #demo-live.again { cursor: pointer; color: var(--muted); }
-  #demo-live.again::before { animation: none; background: var(--faint); }
-  #demo-live.again:hover { color: var(--ink); }
-  #demo-lines {
-    flex: 1; overflow: hidden;
-    padding: 18px 22px;
-    font-family: var(--mono); font-size: 12.5px; line-height: 2;
-  }
-  #demo-lines .dl { color: var(--muted); animation: rise 0.5s cubic-bezier(0.2,0.8,0.2,1) both; }
-  #demo-lines .dl b { color: var(--ink); font-weight: 500; }
-  #demo-lines .dl .hl { color: var(--accent); }
-  .dprog {
-    display: inline-block; vertical-align: middle;
-    width: 90px; height: 4px; margin-left: 10px;
-    background: var(--line); border-radius: 2px; overflow: hidden;
-  }
-  .dprog > span {
-    display: block; height: 100%; width: 0; background: var(--accent); border-radius: 2px;
-    animation: dfill 1.3s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
-  }
-  @keyframes dfill { to { width: 100%; } }
-  #demo-lines .da {
-    margin-top: 14px;
-    background: #eceffe; border: 1px solid #d9defb; border-radius: 14px;
-    padding: 13px 16px;
-    color: var(--ink); font-size: 13.5px; line-height: 1.7;
-    animation: rise 0.5s both;
-  }
-  #demo-lines .da b { color: var(--accent); font-weight: 500; }
-  @media (max-width: 860px) { #demo { height: 420px; } #demo-lines { font-size: 11px; padding: 14px 16px; } }
-
-
-  /* editorial section */
-  main { position: relative; z-index: 2; background: var(--paper); border-top: 1px solid var(--line); }
-  section { max-width: 1080px; margin: 0 auto; padding: 120px max(28px, 4vw) 80px; }
-  .sec-kicker {
-    font-family: var(--mono); font-size: 11px; letter-spacing: 0.22em;
-    color: var(--accent); margin-bottom: 22px;
-  }
-  h2 { font-size: clamp(32px, 4vw, 56px); font-weight: 700; letter-spacing: -0.03em; line-height: 1.04; }
-  .lede { font-size: 18px; color: var(--muted); max-width: 56ch; margin-top: 26px; line-height: 1.7; }
-  .lede b { color: var(--ink); font-weight: 500; }
-
-  .how-grid {
-    display: grid; grid-template-columns: 1.15fr 1fr;
-    gap: 64px; align-items: start; margin-top: 64px;
-  }
-  .how-left { position: sticky; top: 100px; }
-  .hs {
-    display: flex; gap: 20px; align-items: flex-start;
-    padding: 26px 0; border-bottom: 1px solid var(--line);
-  }
-  .hs:first-child { padding-top: 6px; }
-  .hs-n {
-    font-family: var(--mono); font-size: 11px; color: var(--accent);
-    width: 32px; height: 32px; border: 1px solid var(--accent); border-radius: 50%;
-    display: flex; align-items: center; justify-content: center; flex: none;
-    margin-top: 2px;
-  }
-  .hs h3 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; margin-bottom: 7px; }
-  .hs p { font-size: 14.5px; color: var(--muted); line-height: 1.65; }
-  .hs-note { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 24px; }
-
-  .endcta { text-align: center; padding: 60px 28px 130px; }
-  .endcta .big { font-size: clamp(26px, 3vw, 42px); font-weight: 700; letter-spacing: -0.03em; margin-bottom: 32px; line-height: 1.15; }
-  .endcta .big em { font-style: normal; color: var(--accent); }
-
-  footer {
-    border-top: 1px solid var(--line);
-    padding: 34px max(28px, 4vw);
-    display: flex; align-items: center; gap: 16px;
-    font-family: var(--mono); font-size: 11px; color: var(--muted);
-    position: relative; z-index: 2; background: var(--paper);
-  }
-
-  #modal {
-    position: fixed; inset: 0; z-index: 100;
-    display: flex; align-items: center; justify-content: center;
-    background: rgba(20,21,26,0.35);
-    backdrop-filter: blur(10px);
-    padding: 24px;
-  }
-  #modal[hidden] { display: none; }
-  #modal-card {
-    position: relative;
-    background: var(--paper); border: 1px solid var(--line);
-    border-radius: 26px; padding: 44px 46px;
-    max-width: 560px; width: 100%;
-    box-shadow: 0 30px 90px rgba(20,21,26,0.25);
-    animation: pop 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both;
-  }
-  @keyframes pop { from { opacity: 0; transform: scale(0.94) translateY(14px); } to { opacity: 1; transform: none; } }
-  #modal-card h3 { font-size: clamp(24px, 2.6vw, 34px); font-weight: 700; letter-spacing: -0.03em; line-height: 1.1; margin-bottom: 18px; }
-  #modal-card p { font-size: 15px; color: var(--muted); line-height: 1.7; margin-bottom: 14px; }
-  #modal-card p b { color: var(--ink); font-weight: 500; }
-  #modal-x {
-    position: absolute; top: 18px; right: 22px;
-    background: none; border: none; font-size: 26px; color: var(--muted);
-    cursor: pointer; line-height: 1;
-  }
-  #modal-x:hover { color: var(--ink); }
-  .modal-row { display: flex; align-items: center; gap: 22px; margin-top: 26px; flex-wrap: wrap; }
-  #modal-more { font-family: var(--mono); font-size: 12px; color: var(--muted); text-decoration: none; }
-  #modal-more:hover { color: var(--ink); }
-
-  .rv { opacity: 0; transform: translateY(26px); transition: all 0.8s cubic-bezier(0.2, 0.8, 0.2, 1); }
-  .rv.in { opacity: 1; transform: none; }
-  .ri { animation: rise 1s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
-  .ri.d1 { animation-delay: 0.08s; } .ri.d2 { animation-delay: 0.16s; } .ri.d3 { animation-delay: 0.24s; }
-  @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
-
-  @media (max-width: 860px) {
-    .copy { top: auto; bottom: 78px; transform: none; right: 24px; max-width: none; }
-    h1 { font-size: clamp(38px, 10.5vw, 56px); }
-    .sub { font-size: 14.5px; max-width: none; margin-bottom: 26px; }
-    .cta { padding: 13px 24px; font-size: 13px; }
-    #strip { font-size: 9.5px; padding: 14px 24px; }
-    .navlink { display: none; }
-    .gh .gh-label { display: none; }
-    .how-grid { grid-template-columns: 1fr; gap: 36px; }
-    .how-left { position: static; }
-  }
-  }
-</style>
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">
+<title>pooled: pool your devices, run AI together</title>
+<link rel="canonical" href="https://pooled.run/">
+<meta name="description" content="Peer-to-peer LLM inference in the browser. Pool your devices to run big open models, for chat and coding agents. Open source, MIT.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="pooled">
+<meta property="og:title" content="pooled: pool your devices, run AI together">
+<meta property="og:description" content="Peer-to-peer LLM inference in the browser. Pool your devices to run big open models, for chat and coding agents. Open source, MIT.">
+<meta property="og:url" content="https://pooled.run/">
+<meta property="og:image" content="https://pooled.run/site/og.png?v=2">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="pooled: Pool your devices. Run AI together. Below, the demo: a Tetris game an agent wrote, on a model pooled across three devices">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="pooled: pool your devices, run AI together">
+<meta name="twitter:description" content="Peer-to-peer LLM inference in the browser. Pool your devices to run big open models, for chat and coding agents. Open source, MIT.">
+<meta name="twitter:image" content="https://pooled.run/site/og.png?v=2">
+<meta name="twitter:image:alt" content="pooled: Pool your devices. Run AI together. Below, the demo: a Tetris game an agent wrote, on a model pooled across three devices">
+<meta name="theme-color" content="#F6F5F1">
+<link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?v=3">
+<link rel="manifest" href="/site.webmanifest?v=2">
+<link rel="preload" href="/site/fonts/geist-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/site/fonts/geist-mono-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/site/fonts/funnel-display-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/site/css/fonts.css">
+<link rel="stylesheet" href="/site/css/tokens.css">
+<link rel="stylesheet" href="/site/css/site.css">
+<script src="/site/js/boot.js"></script>
 </head>
 <body>
+<svg class="sprite" width="0" height="0" aria-hidden="true" focusable="false">
+  <symbol id="i-mark" viewBox="0 0 24 24"><circle cx="3.4" cy="3.4" r="1.8"/><circle cx="10.2" cy="3.4" r="1.99"/><circle cx="18.5" cy="3.4" r="2.38"/><circle cx="3.4" cy="10.2" r="1.99"/><circle cx="10.2" cy="10.2" r="2.38"/><circle cx="18.5" cy="10.2" r="2.94"/><circle cx="3.4" cy="18.5" r="2.38"/><circle cx="10.2" cy="18.5" r="2.94"/><circle cx="18.5" cy="18.5" r="3.9" fill="#2A45E0"/></symbol>
+  <symbol id="i-laptop" viewBox="0 0 16 16"><path d="M3 3.5h10v7H3zM1.2 12.5h13.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 16 16"><rect x="4.5" y="1.5" width="7" height="13" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 12.2h2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+  <symbol id="i-desk" viewBox="0 0 16 16"><path d="M1.8 2.8h12.4v8.4H1.8zM8 11.2v2.6M5.2 13.8h5.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 10 10"><rect x="2" y="4.5" width="6" height="4.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.5 4.5V3a1.5 1.5 0 0 1 3 0v1.5" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+  <symbol id="i-check" viewBox="0 0 12 12"><path d="m2.5 6.2 2.3 2.3 4.7-5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-file" viewBox="0 0 14 14"><path d="M3.5 1.5h4.5l3 3v8h-7.5z M8 1.5v3h3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+  <symbol id="i-dir" viewBox="0 0 14 14"><path d="M1.5 3.5h4l1.2 1.3h5.8v6.7h-11z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+  <symbol id="i-down" viewBox="0 0 14 14"><path d="M7 2v7.2M3.8 6.4 7 9.6l3.2-3.2M2.5 12h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-reload" viewBox="0 0 12 12"><path d="M10 6a4 4 0 1 1-1.2-2.85M10 1.8v2.4H7.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-shuffle" viewBox="0 0 16 16"><path d="M2 4.5h2.5c3 0 4 7 7 7H14M12 9.5l2 2-2 2M2 11.5h2.5c1.2 0 2-1 2.6-2.2M9.3 6.5c.6-1.1 1.3-2 2.2-2H14M12 2.5l2 2-2 2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 10 10"><path d="M2 8 8 2M3.5 2H8v4.5" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+  <symbol id="i-next" viewBox="0 0 16 16"><path d="M3 8h10M9 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</svg>
 
-<div id="stage"><canvas id="mesh"></canvas></div>
+<a class="skip" href="#main">Skip to content</a>
 
-<div id="modal" hidden>
-  <div id="modal-card">
-    <button id="modal-x" aria-label="close">×</button>
-    <div class="sec-kicker">WHAT IS SWARMLLM</div>
-    <h3>A group of devices,<br>running one AI together.</h3>
-    <p>Big models like <b>Qwen 3.8</b> are too large for any single phone or laptop. That is why AI lives in data centers.</p>
-    <p>SwarmLLM splits the model across every device in a room: each one downloads just its slice, and every word of the answer takes a lightning lap through all of them before it appears on every screen at once.</p>
-    <p>No install. No accounts. No servers. Your words never leave the room.</p>
-    <div class="modal-row">
-      <a class="cta" href="/room">start a swarm <span class="arrow">→</span></a>
-      <a id="modal-more" href="#how">read the full story ↓</a>
+<nav class="nav" aria-label="Main">
+  <div class="wrap nav-in">
+    <a class="brand" href="#top" aria-label="Pooled home">
+      <svg class="mark" width="22" height="22" aria-hidden="true"><use href="#i-mark"/></svg>
+      <span class="wm">pooled</span>
+    </a>
+    <div class="right">
+      <a class="nav-link" href="/docs">Docs</a>
+      <div class="nav-seg" role="group" aria-label="Use it from the terminal or with agents"><a href="/docs/terminal">CLI</a><a href="/docs/kits/openclaw">Agents<span class="nav-tag">beta</span></a></div>
+      <a class="gh-link" href="https://github.com/Nehanth/pooled" aria-label="pooled on GitHub" title="GitHub"><svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+      <a class="btn btn-blue btn-sm" href="/room">Start a room</a>
     </div>
   </div>
-</div>
-
-<nav id="nav">
-  <a class="wordmark ri" href="/">swarm<em>LLM</em></a>
-  <div class="spacer"></div>
-  <a class="navlink ri d1" href="#how">what is this?</a>
-  <a class="gh ri d1" href="https://github.com/Nehanth/swarmllm" target="_blank" rel="noopener" aria-label="SwarmLLM on GitHub"><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg><span class="gh-label">github</span></a>
-  <a class="cta ri d1" href="/room">start a swarm <span class="arrow">→</span></a>
 </nav>
 
-<div id="hero">
-  <div class="copy">
-    <div class="kicker ri">MESH INFERENCE</div>
-    <h1 class="ri d1">Your phone <span class="dim">can't run</span><br>Qwen 3.8<br><span class="acc">Your room can.</span></h1>
-    <p class="sub ri d2">Phones, laptops, friends' PCs: <b>one room code</b> away from becoming a single machine. Each holds a slice of the model; together they run the whole thing. Nothing to install.</p>
-    <a class="cta ri d3" href="/room">start a swarm <span class="arrow">→</span></a>
-  </div>
-  <div id="strip" class="ri d3">
-    <span>no servers</span><span class="sep">·</span>
-    <span>nothing leaves your room</span><span class="sep">·</span>
-    <span>one code to join</span>
-  </div>
-</div>
+<main id="main">
+  <header class="hero" id="top">
+    <canvas class="swarm" id="swarm" aria-hidden="true"></canvas>
+    <div class="wrap hero-in">
+      <h1>Pool your devices. <span>Run AI together.</span></h1>
+      <p class="sub">Peer-to-peer LLM inference in the browser. Pool your devices to run big open models, for chat and coding agents.</p>
+    </div>
+  </header>
 
-<main>
-  <section id="how">
-    <div class="sec-kicker rv">WHAT IS SWARMLLM</div>
-    <h2 class="rv">One model,<br>shared by the room.</h2>
-    <p class="lede rv">Big LLMs need more memory than any one device has. SwarmLLM lets a room of everyday devices share the load, and think as one.</p>
-    <div class="how-grid">
-      <div class="how-left rv">
-        <div id="demo">
-          <div class="demo-bar">
-            <span class="wdots"><i></i><i></i><i></i></span>
-            <span class="demo-title">room RZBB</span>
-            <button id="demo-live">LIVE</button>
-          </div>
-          <div id="demo-lines"></div>
+  <section class="stage" aria-labelledby="stage-h">
+    <h2 class="sr-only" id="stage-h">How a room works</h2>
+    <div class="wrap">
+      <div class="demo" id="demo" data-scene="tabs" data-mode="chat">
+
+        <div class="modes" role="tablist" aria-label="Demo">
+          <span class="pill" aria-hidden="true"></span>
+          <button type="button" role="tab" id="mChat" aria-controls="win" aria-selected="true">Chat</button>
+          <button type="button" role="tab" id="mCode" data-twinkle aria-controls="win" aria-selected="false" tabindex="-1">Code</button>
         </div>
-      </div>
-      <div class="how-steps rv">
-        <div class="hs"><span class="hs-n">01</span><div><h3>Make a room</h3><p>Get a four-letter code. Friends type it in. Devices link up. No accounts.</p></div></div>
-        <div class="hs"><span class="hs-n">02</span><div><h3>Chip in</h3><p>Each device takes a slice of the model. Bigger devices take more.</p></div></div>
-        <div class="hs"><span class="hs-n">03</span><div><h3>Think together</h3><p>Every word laps the room, then appears on every screen at once.</p></div></div>
-        <div class="hs-note">Private by design. Your words never leave the room.</div>
+
+        <div class="win" id="win" role="tabpanel" aria-labelledby="mChat">
+          <!-- the room: its code, and every device in it -->
+          <div class="hd">
+            <span class="hd-room"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#i-mark"/></svg><span class="hd-k">Room</span><b class="hd-code" id="hdCode" role="img" aria-label="K7QX"><span>K</span><span>7</span><span>Q</span><span>X</span></b></span>
+            <ul class="chips" id="chips" aria-label="Devices in the room">
+              <li class="chip c0"><svg width="14" height="14" aria-hidden="true"><use href="#i-laptop"/></svg><span class="cn" data-name="0">fox</span><span class="cg">10 GB</span><span class="cst"></span></li>
+              <li class="chip c1"><svg width="14" height="14" aria-hidden="true"><use href="#i-desk"/></svg><span class="cn" data-name="1">heron</span><span class="cg">12 GB</span><span class="cst"></span></li>
+              <li class="chip c2"><svg width="14" height="14" aria-hidden="true"><use href="#i-phone"/></svg><span class="cn" data-name="2">lynx</span><span class="cg">2 GB</span><span class="cst"></span></li>
+            </ul>
+            <span class="hd-sum"><b id="gbSum">24 GB</b><span class="pw"> pooled</span></span>
+            <span class="hd-inv" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg><span class="lbl">Invite</span></span>
+            <span class="hd-me" id="hdMe" aria-hidden="true"><svg class="hm" width="16" height="16" viewBox="0 0 24 24"><circle cx="3.4" cy="3.4" r="1.8" style="--rc:0"/><circle cx="10.2" cy="3.4" r="1.99" style="--rc:1"/><circle cx="18.5" cy="3.4" r="2.38" style="--rc:2"/><circle cx="3.4" cy="10.2" r="1.99" style="--rc:1"/><circle cx="10.2" cy="10.2" r="2.38" style="--rc:2"/><circle cx="18.5" cy="10.2" r="2.94" style="--rc:3"/><circle cx="3.4" cy="18.5" r="2.38" style="--rc:2"/><circle cx="10.2" cy="18.5" r="2.94" style="--rc:3"/><circle class="lit" cx="18.5" cy="18.5" r="3.9" style="--rc:4"/></svg></span>
+          </div>
+
+          <!-- someone joined: the room's toast (room.js presence), bottom right -->
+          <div class="toasts" aria-hidden="true"><p class="toast c1" id="toastB"><span><span data-name="1">heron</span> joined</span></p><p class="toast c2" id="toastC"><span><span data-name="2">lynx</span> joined</span></p></div>
+          <div class="body" id="body">
+
+            <!-- 1, 2: a laptop starts a room (it already has a name), a desktop joins with the code -->
+            <div class="scene s-tabs">
+              <div class="tab" id="tabA">
+                <p class="tab-dev"><svg width="14" height="14" aria-hidden="true"><use href="#i-laptop"/></svg>MacBook Air</p>
+                <div class="tabwin">
+                  <div class="tab-bar"><span class="url"><svg width="10" height="10" aria-hidden="true"><use href="#i-lock"/></svg>pooled.run/room</span></div>
+                  <div class="tab-body">
+                    <div class="mcard">
+                      <div class="mpre">
+                        <h3>New room</h3>
+                        <p>You get a code to type on your other devices.</p>
+                        <p class="nm-k">This device</p>
+                        <span class="devname" id="nmA"><span class="nm-v" data-name="0">fox</span><span class="shuf" aria-hidden="true"><svg width="14" height="14"><use href="#i-shuffle"/></svg></span></span>
+                        <span class="mbtn blue" id="aGo">Start a room</span>
+                      </div>
+                      <div class="mpost">
+                        <p class="mk">Room code</p>
+                        <p class="mcode" id="aCode" role="img" aria-label="K7QX"><span>K</span><span>7</span><span>Q</span><span>X</span></p>
+                        <p class="mwait"><span class="live" aria-hidden="true"></span>Waiting for your other devices</p>
+                        <p class="mjoined"><svg width="12" height="12" aria-hidden="true"><use href="#i-check"/></svg><span><span data-name="1">heron</span> joined</span></p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="tab" id="tabB">
+                <p class="tab-dev"><svg width="14" height="14" aria-hidden="true"><use href="#i-desk"/></svg>Desktop PC</p>
+                <div class="tabwin">
+                  <div class="tab-bar"><span class="url"><svg width="10" height="10" aria-hidden="true"><use href="#i-lock"/></svg>pooled.run/room</span></div>
+                  <div class="tab-body">
+                    <div class="mcard">
+                      <div class="mjoin">
+                        <h3>Have a code?</h3>
+                        <p class="nm-k">This device</p>
+                        <span class="devname" id="nmB"><span class="nm-v" data-name="1">heron</span><span class="shuf" aria-hidden="true"><svg width="14" height="14"><use href="#i-shuffle"/></svg></span></span>
+                        <div class="slots" role="img" aria-label="Code typed: K7QX"><i>K</i><i>7</i><i>Q</i><i>X</i></div>
+                        <span class="mbtn" id="bBtn">Join</span>
+                        <p class="mok"><svg width="12" height="12" aria-hidden="true"><use href="#i-check"/></svg>Joined room K7QX</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 3: the room's model card: each device lends memory (a friend's phone joins and adds its share),
+                 then the room picks a model that fits. 4: the layers are dealt by memory and each device fetches
+                 only its own. 5: every word passes through all of them -->
+            <div class="model" id="model">
+              <div class="card" id="card" data-face="pool">
+                <div class="cd-pick">
+                  <p class="cd-h"><b>Pick a model</b><span>Anyone in the room can start it.</span></p>
+                  <ul class="rungs" id="rungs">
+                    <li class="ok" data-need="4"><span class="rn">Qwen3 1.7B</span><span class="fig"><span class="nd">4 GB</span><b>fits</b><span class="more"></span></span></li>
+                    <li class="ok" data-need="17"><span class="rn">Qwen3.8 27B</span><span class="fig"><span class="nd">17 GB</span><b>fits</b><span class="more"></span></span></li>
+                    <li class="ok sel" data-need="22.5"><span class="rn">Qwen3.6 35B MoE</span><span class="fig"><span class="nd">22.5 GB</span><b>fits</b><span class="more"></span></span></li>
+                    <li class="ok dk" data-need="8" title="Qwen3.8 Flash: a 125B model (6B active) that keeps most of itself on disk, so it needs far less GPU memory"><span class="rn"><span class="rnm">Qwen3.8 Flash</span><span class="xp">experimental</span></span><span class="fig"><span class="dkc"><span class="dkz">125B · </span><span class="dkr">runs </span>from disk</span><b>fits</b><span class="more"></span></span></li>
+                  </ul>
+                  <p class="cd-note">Each device downloads only its own layers, once. They stay cached for next time.</p>
+                  <span class="mbtn blue" id="startBtn">Start the model</span>
+                </div>
+                <div class="cd-pool">
+                  <section class="cd-sec">
+                    <p class="ap-k"><span>The room pools</span><b id="poolGB">24 GB</b></p>
+                    <div class="meter" id="meter" aria-hidden="true">
+                      <div class="mt-fill"><i class="c0" style="width:39.3%"></i><i class="c1" style="width:47.2%"></i><i class="c2" style="width:7.9%"></i></div>
+                      <div class="mt-ticks"><span class="ok" style="left:15.7%"></span><span class="ok" style="left:66.8%"></span><span class="ok sel r" id="tick" style="left:88.4%"></span></div>
+                    </div>
+                    <p class="need ok" id="need"><span class="nn">Qwen3.6 35B MoE needs</span><span class="nn2">Needs</span> <b>22.5 GB</b><span>fits</span></p>
+                    <ul class="devs" id="devs" aria-label="What each device lends">
+                      <li class="c0"><i></i><span><span data-name="0">fox</span> <small>(this device)</small></span><b>10 GB</b></li>
+                      <li class="c1"><i></i><span data-name="1">heron</span><b>12 GB</b></li>
+                      <li class="c2"><i></i><span><span data-name="2">lynx</span> <small>(phone)</small></span><b>2 GB</b></li>
+                    </ul>
+                  </section>
+                  <section class="cd-sec cd-me">
+                    <p class="ap-k"><span>This device gives</span></p>
+                    <span class="ap-step"><span class="step" id="lendMinus">&minus;</span><b id="lendGB">10</b><span class="u">GB</span><span class="step" id="lendPlus">+</span></span>
+                  </section>
+                </div>
+              </div>
+
+              <div class="band" id="band">
+                <p class="bd-h"><span class="bd-n">Qwen3.6 35B MoE</span><span class="bd-live" aria-hidden="true"><i></i><span id="bdLive">Ready</span></span><span class="bd-mini" aria-hidden="true"><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c2"></i><i class="c2"></i><i class="c2"></i></span><span class="bd-s" id="mdS">Ready on 3 devices · 40 layers, split by memory</span><span class="bd-stats" aria-hidden="true"><span><b>21.4</b>tok/s</span><span><b>64</b>ms per word</span><span><b id="bdTok">31</b>tokens</span><span><b>1.8k / 32k</b>context</span></span><span class="bd-tog" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m4 10 4-4 4 4"/></svg></span></p>
+                <div class="rows" id="rows">
+                  <div class="row c0">
+                    <p class="hl"><i class="act" aria-hidden="true"></i><svg width="13" height="13" aria-hidden="true"><use href="#i-laptop"/></svg><b data-name="0">fox</b><span class="hs"><span class="lr">layers 1-17</span><span class="lms">18 ms</span><span class="hg" id="hg0">9.6 GB, from cache</span></span></p>
+                    <div class="cells" id="cells0"><i style="grid-column-start:1"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                  </div>
+                  <div class="row c1">
+                    <p class="hl"><i class="act" aria-hidden="true"></i><svg width="13" height="13" aria-hidden="true"><use href="#i-desk"/></svg><b data-name="1">heron</b><span class="hs"><span class="lr">layers 18-37</span><span class="lms">27 ms</span><span class="hg" id="hg1">11.2 GB, ready</span></span></p>
+                    <div class="cells" id="cells1"><i style="grid-column-start:18"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                  </div>
+                  <div class="row c2">
+                    <p class="hl"><i class="act" aria-hidden="true"></i><svg width="13" height="13" aria-hidden="true"><use href="#i-phone"/></svg><b data-name="2">lynx</b><span class="hs"><span class="lr">layers 38-40</span><span class="lms">36 ms</span><span class="hg" id="hg2">1.7 GB, ready</span></span></p>
+                    <div class="cells" id="cells2"><i style="grid-column-start:38"></i><i></i><i></i></div>
+                  </div>
+                  <span class="pkt" id="pkt" aria-hidden="true"></span>
+                </div>
+                <p class="lk-l" aria-hidden="true"><b>about 10 KB</b> between devices per word</p>
+              </div>
+
+              <!-- 4: the download, as the room's load card (p2p.html #load-card): a row per device, the model's
+                   layers as a strip that fills in each device's colour, and how far along the whole thing is -->
+              <div class="ldc" id="ldc">
+                <div class="lc-head"><svg class="dl" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8" style="--rc:0"/><circle cx="10.2" cy="3.4" r="1.99" style="--rc:1"/><circle cx="18.5" cy="3.4" r="2.38" style="--rc:2"/><circle cx="3.4" cy="10.2" r="1.99" style="--rc:1"/><circle cx="10.2" cy="10.2" r="2.38" style="--rc:2"/><circle cx="18.5" cy="10.2" r="2.94" style="--rc:3"/><circle cx="3.4" cy="18.5" r="2.38" style="--rc:2"/><circle cx="10.2" cy="18.5" r="2.94" style="--rc:3"/><circle cx="18.5" cy="18.5" r="3.9" style="--rc:4"/></svg><div class="lc-h"><p class="lc-t">Loading Qwen3.6 35B MoE</p><p class="lc-note">Each device downloads only its own layers.</p></div></div>
+                <div class="lc-rows" id="lcRows">
+                  <div class="lc-row done c0"><i class="sw"></i><div class="n"><span class="nm"><span data-name="0">fox</span> <small>(you)</small></span><span class="lr">layers 1–17</span></div><div class="bar"><div class="fill" style="width:100%"></div></div><div class="pct">ready</div></div>
+                  <div class="lc-row done c1"><i class="sw"></i><div class="n"><span class="nm"><span data-name="1">heron</span></span><span class="lr">layers 18–37</span></div><div class="bar"><div class="fill" style="width:100%"></div></div><div class="pct">ready</div></div>
+                  <div class="lc-row done c2"><i class="sw"></i><div class="n"><span class="nm"><span data-name="2">lynx</span></span><span class="lr">layers 38–40</span></div><div class="bar"><div class="fill" style="width:100%"></div></div><div class="pct">ready</div></div>
+                </div>
+                <div class="lc-strip" id="lcStrip" aria-hidden="true"><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c2"></i><i class="c2"></i><i class="c2"></i></div>
+                <p class="lc-status" id="lcStatus"><span class="src">Downloading</span><span class="b">22.5 GB of 22.5 GB</span></p>
+              </div>
+            </div>
+
+
+            <div class="scene s-chat">
+              <ol class="msgs" id="msgs">
+                <li class="sys"><svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8"/><circle cx="10.2" cy="3.4" r="1.99"/><circle cx="18.5" cy="3.4" r="2.38"/><circle cx="3.4" cy="10.2" r="1.99"/><circle cx="10.2" cy="10.2" r="2.38"/><circle cx="18.5" cy="10.2" r="2.94"/><circle cx="3.4" cy="18.5" r="2.38"/><circle cx="10.2" cy="18.5" r="2.94"/><circle cx="18.5" cy="18.5" r="3.9"/></svg><span>Model ready on 3 devices</span></li>
+                <li class="q" data-at="q1"><span class="who" data-name="0">fox</span><p>what is Pooled?</p></li>
+                <li class="a" data-at="a1"><span class="who"><span class="wn">Qwen3.6 35B MoE</span><span class="wd" aria-hidden="true"><i></i><i></i><i></i></span></span><p class="wkb" aria-hidden="true"><span class="working"><svg class="wk-mk" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8" style="--rc:0"/><circle cx="10.2" cy="3.4" r="1.99" style="--rc:1"/><circle cx="18.5" cy="3.4" r="2.38" style="--rc:3"/><circle cx="3.4" cy="10.2" r="1.99" style="--rc:1"/><circle cx="10.2" cy="10.2" r="2.38" style="--rc:2"/><circle cx="18.5" cy="10.2" r="2.94" style="--rc:4"/><circle cx="3.4" cy="18.5" r="2.38" style="--rc:3"/><circle cx="10.2" cy="18.5" r="2.94" style="--rc:4"/><circle class="lit" cx="18.5" cy="18.5" r="3.9" style="--rc:5"/></svg><span>Pondering…</span></span></p><p class="say" id="a1">Pooled splits big models across devices, so together they run models none of them could run alone. It can chat, or write code.</p><div class="m-acts" aria-hidden="true"><span class="icon-act"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8.5" rx="1.8"/><path d="M10.5 5.5V3.8c0-1-.8-1.8-1.8-1.8H4.3c-1 0-1.8.8-1.8 1.8v4.4c0 1 .8 1.8 1.8 1.8h1.2"/></svg></span><span class="stats">21.4 tok/s · 3 devices</span></div></li>
+              </ol>
+              <div class="ctools" aria-hidden="true"><span class="ct-b">Show drafts</span><span class="ctx"><i style="--p:1"></i>1% of context</span></div>
+              <div class="composer" id="chatComposer" aria-hidden="true">
+                <span class="field"><span class="typed" id="chatTyped"></span><span class="ph">Message the room</span></span>
+                <span class="send">Send</span>
+              </div>
+            </div>
+
+            <!-- 6 to 8: Code. Files on the left, the agent, then the app it serves -->
+            <div class="scene s-code">
+              <div class="files">
+                <div class="cf-proj" aria-hidden="true"><span class="cf-sel"><span id="fDir">tetris</span><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m4 6 4 4 4-4"/></svg></span><span class="cf-btn">New</span><span class="cf-btn">Open folder…</span><span class="cf-kind">saved in this browser</span></div>
+                <p class="fh"><svg width="14" height="14" aria-hidden="true"><use href="#i-dir"/></svg><span>Files</span></p>
+                <ul class="ftree" id="ftree">
+                  <li data-f="index.html"><svg width="13" height="13" aria-hidden="true"><use href="#i-file"/></svg><span class="fn">index.html</span><span class="fm">24</span></li>
+                  <li data-f="style.css"><svg width="13" height="13" aria-hidden="true"><use href="#i-file"/></svg><span class="fn">style.css</span><span class="fm">60</span></li>
+                  <li data-f="game.js" class="mod"><svg width="13" height="13" aria-hidden="true"><use href="#i-file"/></svg><span class="fn">game.js</span><span class="fm">213</span></li>
+                </ul>
+                <p class="fempty">No files yet</p>
+              </div>
+
+              <div class="agent">
+                <p class="ag-h"><span>Agent</span><span class="ag-m">Qwen3.6 35B MoE on 3 devices</span></p>
+                <ol class="log" id="log">
+                  <li class="cu" data-at="c-q"><span class="who" data-name="0">fox</span><p>build me a tetris game</p></li>
+                  <li class="ct" data-at="c-s1"><p class="say">I'll write three files and serve them on :5173.</p></li>
+                  <li class="tool" data-at="c-t0"><p class="tl"><span class="nm">write_file</span><span class="br">index.html</span><span class="ms">21 ms</span><span class="st">done</span></p><div class="diff new"><p class="dh"><b>index.html</b><span class="nf">new file · <span class="nl">0</span> lines</span></p><div class="rs"></div></div></li>
+                  <li class="tool" data-at="c-t1"><p class="tl"><span class="nm">write_file</span><span class="br">style.css</span><span class="ms">13 ms</span><span class="st">done</span></p><div class="diff new"><p class="dh"><b>style.css</b><span class="nf">new file · <span class="nl">0</span> lines</span></p><div class="rs"></div></div></li>
+                  <li class="tool" data-at="c-t2"><p class="tl"><span class="nm">write_file</span><span class="br">game.js</span><span class="ms">20 ms</span><span class="st">done</span></p><div class="diff new"><p class="dh"><b>game.js</b><span class="nf">new file · <span class="nl">0</span> lines</span></p><div class="rs"></div></div></li>
+                  <li class="wlive pending" id="lv"><p class="lh"><span class="nm">writing</span><b id="lvF">game.js</b><span class="n" id="lvN">0 lines</span></p><pre id="lvPre"></pre></li>
+                  <li class="tool" data-at="c-t3"><p class="tl"><span class="nm">serve</span><span class="br">5173</span><span class="ms">552 ms</span><span class="st">done</span></p></li>
+                  <li class="ct" data-at="c-s2"><p class="say">Tetris is running on :5173.</p></li>
+                  <li class="cstats" data-at="c-st2"><p>5 steps · 4 tool calls · 3 devices · 8.4 s</p></li>
+                  <li class="cu" data-at="c-q2"><span class="who" data-name="0">fox</span><p>make the pieces blue and add a next-piece preview</p></li>
+                  <li class="tool" data-at="c-t4"><p class="tl"><span class="nm">edit_file</span><span class="br">game.js</span><span class="ms">16 ms</span><span class="st">done</span></p>
+                    <div class="diff"><p class="dh"><b>game.js</b><span class="dn"><span class="add">+4</span><span class="del">-1</span></span></p><div class="rs" id="diff"><span class="r del">const COLORS = ["#F08A6C", "#F2C14E", "#6CC5A1", ...];</span><span class="r add">const COLORS = ["#2A45E0", "#6E86FF", "#A5B4FC", ...];</span><span class="r add">const next = document.getElementById("next");</span><span class="r add">function drawNext() { paint(next, queue[0]); }</span><span class="r add">// called after each spawn()</span></div></div></li>
+                  <li class="ct" data-at="c-s3"><p class="say">Done. The pieces are blue, and the next one shows beside the board.</p></li>
+                  <li class="cstats" data-at="c-st3"><p>3 steps · 2 tool calls · 3 devices · 3.1 s</p></li>
+                </ol>
+                <div class="cbar" aria-hidden="true"><span class="cb-auto"><i></i>Auto-approve edits</span><span class="cb-b">New task</span></div>
+                <div class="composer" id="codeComposer" aria-hidden="true">
+                  <span class="field"><span class="typed" id="codeTyped"></span><span class="ph">Ask the agent to build or change something</span></span>
+                  <span class="send">Send</span><span class="stop">Stop</span>
+                </div>
+              </div>
+
+              <div class="pvcol" id="pvcol">
+                <div class="pv" id="pv">
+                  <div class="pv-h" aria-hidden="true"><span class="pv-tabs"><span class="on">Preview</span><span>Editor</span></span></div>
+                  <div class="pv-bar"><svg class="pv-rl" width="12" height="12" aria-hidden="true"><use href="#i-reload"/></svg><span class="pv-addr"><svg width="10" height="10" aria-hidden="true"><use href="#i-lock"/></svg><span class="host">sandbox:5173</span><span class="pth">/index.html</span></span><span class="pv-rev" id="pvRev">rev 1</span><span class="pv-sb">sandbox</span><span class="pv-open">Open <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M3 7l4-4M3.5 3H7v3.5"/></svg></span><button type="button" class="pv-back" id="pvBack">Back to the demo</button><span class="br-load" aria-hidden="true"><i id="brLoad"></i></span></div>
+                  <div class="pv-frame" id="pvFrame">
+                    <div class="app" id="app">
+                      <div class="game" id="game" tabindex="0" role="application" aria-label="The Tetris game the agent wrote, playing itself. Play it with the arrow keys and space; Escape hands it back.">
+                        <svg class="board-static" viewBox="0 0 200 400" aria-hidden="true"><rect width="200" height="400" fill="#0E1328"/><rect x="121" y="261" width="18" height="18" fill="#6E86FF"/><rect x="141" y="261" width="18" height="18" fill="#6E86FF"/><rect x="1" y="281" width="18" height="18" fill="#2A45E0"/><rect x="101" y="281" width="18" height="18" fill="#6E86FF"/><rect x="121" y="281" width="18" height="18" fill="#6E86FF"/><rect x="141" y="281" width="18" height="18" fill="#6E86FF"/><rect x="1" y="301" width="18" height="18" fill="#2A45E0"/><rect x="41" y="301" width="18" height="18" fill="#A5B4FC"/><rect x="61" y="301" width="18" height="18" fill="#A5B4FC"/><rect x="121" y="301" width="18" height="18" fill="#8EA2FF"/><rect x="141" y="301" width="18" height="18" fill="#8EA2FF"/><rect x="181" y="301" width="18" height="18" fill="#C9D1F7"/><rect x="1" y="321" width="18" height="18" fill="#2A45E0"/><rect x="41" y="321" width="18" height="18" fill="#A5B4FC"/><rect x="61" y="321" width="18" height="18" fill="#A5B4FC"/><rect x="81" y="321" width="18" height="18" fill="#DCE2FF"/><rect x="101" y="321" width="18" height="18" fill="#8EA2FF"/><rect x="121" y="321" width="18" height="18" fill="#8EA2FF"/><rect x="181" y="321" width="18" height="18" fill="#C9D1F7"/><rect x="1" y="341" width="18" height="18" fill="#2A45E0"/><rect x="21" y="341" width="18" height="18" fill="#4A5FD0"/><rect x="41" y="341" width="18" height="18" fill="#4A5FD0"/><rect x="81" y="341" width="18" height="18" fill="#DCE2FF"/><rect x="101" y="341" width="18" height="18" fill="#DCE2FF"/><rect x="121" y="341" width="18" height="18" fill="#DCE2FF"/><rect x="161" y="341" width="18" height="18" fill="#C9D1F7"/><rect x="181" y="341" width="18" height="18" fill="#C9D1F7"/><rect x="1" y="361" width="18" height="18" fill="#DCE2FF"/><rect x="21" y="361" width="18" height="18" fill="#4A5FD0"/><rect x="41" y="361" width="18" height="18" fill="#4A5FD0"/><rect x="61" y="361" width="18" height="18" fill="#6E86FF"/><rect x="81" y="361" width="18" height="18" fill="#6E86FF"/><rect x="101" y="361" width="18" height="18" fill="#6E86FF"/><rect x="141" y="361" width="18" height="18" fill="#A5B4FC"/><rect x="161" y="361" width="18" height="18" fill="#A5B4FC"/><rect x="181" y="361" width="18" height="18" fill="#8EA2FF"/><rect x="1" y="381" width="18" height="18" fill="#DCE2FF"/><rect x="21" y="381" width="18" height="18" fill="#DCE2FF"/><rect x="41" y="381" width="18" height="18" fill="#DCE2FF"/><rect x="61" y="381" width="18" height="18" fill="#C9D1F7"/><rect x="81" y="381" width="18" height="18" fill="#6E86FF"/><rect x="101" y="381" width="18" height="18" fill="#8EA2FF"/><rect x="121" y="381" width="18" height="18" fill="#8EA2FF"/><rect x="141" y="381" width="18" height="18" fill="#A5B4FC"/><rect x="161" y="381" width="18" height="18" fill="#A5B4FC"/><rect x="181" y="381" width="18" height="18" fill="#8EA2FF"/><rect x="81" y="61" width="18" height="18" fill="#6E86FF"/><rect x="101" y="61" width="18" height="18" fill="#6E86FF"/><rect x="121" y="61" width="18" height="18" fill="#6E86FF"/><rect x="101" y="81" width="18" height="18" fill="#6E86FF"/></svg>
+                        <canvas id="appc" aria-hidden="true"></canvas>
+                      </div>
+                    </div>
+                    <!-- while the agent edits the served app the preview frosts over, as in the room (room/code-ui.js editWin) -->
+                    <div class="ew" id="ew" aria-hidden="true"><div class="ew-box"><svg class="wk-mk" width="28" height="28" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8" style="--rc:0"/><circle cx="10.2" cy="3.4" r="1.99" style="--rc:1"/><circle cx="18.5" cy="3.4" r="2.38" style="--rc:3"/><circle cx="3.4" cy="10.2" r="1.99" style="--rc:1"/><circle cx="10.2" cy="10.2" r="2.38" style="--rc:2"/><circle cx="18.5" cy="10.2" r="2.94" style="--rc:4"/><circle cx="3.4" cy="18.5" r="2.38" style="--rc:3"/><circle cx="10.2" cy="18.5" r="2.94" style="--rc:4"/><circle class="lit" cx="18.5" cy="18.5" r="3.9" style="--rc:5"/></svg><span class="ew-t">Editing <span id="ewF">game.js</span></span></div></div>
+                    <!-- touch: the arrow keys and space, under the thumb -->
+                    <div class="pad" id="pad" aria-hidden="true">
+                      <span class="pad-l"><button type="button" tabindex="-1" data-key="ArrowLeft" aria-label="Left"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button type="button" tabindex="-1" data-key="ArrowRight" aria-label="Right"><svg width="16" height="16" viewBox="0 0 16 16"><path d="m6 3 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></span>
+                      <span class="pad-r"><button type="button" tabindex="-1" data-key="ArrowUp" aria-label="Up"><svg width="16" height="16" viewBox="0 0 16 16"><path d="m3 10 5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button type="button" tabindex="-1" data-key="ArrowDown" aria-label="Down"><svg width="16" height="16" viewBox="0 0 16 16"><path d="m3 6 5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button type="button" tabindex="-1" data-key=" " class="pad-a" aria-label="Space">space</button></span>
+                    </div>
+                  </div>
+                  <div class="pv-con" aria-hidden="true"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="m3.5 2 3 3-3 3"/></svg><span class="k">Console</span><span class="n">1 log</span><span class="c">Clear</span></div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- the caption: which step this is; each dot jumps to one -->
+        <div class="stepbar" id="stepbar">
+          <p class="sb-now"><span class="sb-n" id="sbN">8/8</span><span class="sb-t" id="sbT" aria-live="off">Ask for a change. It edits the code and reloads.</span></p>
+          <!-- tabindex=-1 until demo.js runs: without JS the steps are a plain list, not dead buttons -->
+          <ol class="sb-dots" aria-label="Steps">
+            <li><button type="button" data-step="0" tabindex="-1"><i></i><span class="lbl">Start a room. Your laptop already has a name.</span></button></li>
+            <li><button type="button" data-step="1" tabindex="-1"><i></i><span class="lbl">Join from your desktop with the code</span></button></li>
+            <li><button type="button" data-step="2" tabindex="-1"><i></i><span class="lbl">Each device lends some memory. A friend's phone joins in too.</span></button></li>
+            <li><button type="button" data-step="3" tabindex="-1"><i></i><span class="lbl">Pick a model that fits. Each device downloads only its own layers.</span></button></li>
+            <li><button type="button" data-step="4" tabindex="-1"><i></i><span class="lbl">Every word passes through every device, 40 layers in total.</span></button></li>
+            <li class="gap"><button type="button" data-step="5" tabindex="-1"><i></i><span class="lbl">Switch to Code and ask for a game</span></button></li>
+            <li><button type="button" data-step="6" tabindex="-1"><i></i><span class="lbl">It writes the files and serves them on :5173</span></button></li>
+            <li><button type="button" data-step="7" tabindex="-1"><i></i><span class="lbl">Ask for a change. It edits the code and reloads.</span></button></li>
+          </ol>
+          <button class="replay" id="pause" type="button" aria-label="Pause the demo" title="Pause"><svg class="i-pause" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M5.5 3.5v9M10.5 3.5v9"/></svg><svg class="i-play" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.2v9.6L12.5 8z"/></svg></button>
+          <button class="replay" id="replay" type="button" aria-label="Replay from the start" title="Replay"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v3h3"/></svg></button>
+        </div>
       </div>
     </div>
   </section>
 
-  <div class="endcta rv">
-    <div class="big">Your devices are already a <em>supercomputer</em>.<br>Introduce them.</div>
-    <a class="cta" href="/room">start a swarm <span class="arrow">→</span></a>
-  </div>
+  <section class="closer" id="closer" aria-labelledby="closer-h">
+    <canvas class="swarm" id="swarm2" aria-hidden="true"></canvas>
+    <div class="wrap closer-in">
+      <div class="logo-slot" id="logoSlot" aria-hidden="true"><svg width="96" height="96"><use href="#i-mark"/></svg></div>
+      <h2 id="closer-h">Your devices are already a supercomputer. <span>Introduce them.</span></h2>
+      <div class="ctas">
+        <a class="btn btn-blue" href="/room">Start a room <svg width="16" height="16" aria-hidden="true"><use href="#i-next"/></svg></a>
+        <a class="btn btn-star" href="https://github.com/Nehanth/pooled" data-stars aria-label="Star pooled on GitHub"><svg class="gh" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg><svg class="star" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 .25a.75.75 0 0 1 .67.42l1.88 3.8 4.2.61a.75.75 0 0 1 .42 1.28l-3.04 2.96.72 4.18a.75.75 0 0 1-1.09.79L8 12.33l-3.76 1.98a.75.75 0 0 1-1.09-.79l.72-4.18L.83 6.38a.75.75 0 0 1 .42-1.28l4.2-.61L7.33.67A.75.75 0 0 1 8 .25z"/></svg><span class="st-l">Star</span><span class="st-n" hidden></span></a>
+      </div>
+    </div>
+  </section>
 </main>
 
-<footer>
-  <span>swarm<b style="color:var(--accent)">LLM</b> · peer-to-peer inference in the browser</span>
-  <div class="spacer"></div>
-  <a class="gh" href="https://github.com/Nehanth/swarmllm" target="_blank" rel="noopener" aria-label="SwarmLLM on GitHub"><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg><span class="gh-label">source on GitHub · MIT</span></a>
+<footer class="footer">
+  <div class="wrap foot-in">
+    <span class="brand small"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#i-mark"/></svg><span class="wm">pooled</span></span>
+    <span class="foot-note">Open source, MIT.</span>
+  </div>
 </footer>
 
-<script>
-// ---------- nav + reveal ----------
-const nav = document.getElementById("nav");
-addEventListener("scroll", () => nav.classList.toggle("scrolled", scrollY > 8), { passive: true });
-const modal = document.getElementById("modal");
-document.querySelector(".navlink").addEventListener("click", (e) => {
-  e.preventDefault();
-  modal.hidden = false;
-});
-const closeModal = () => { modal.hidden = true; };
-document.getElementById("modal-x").addEventListener("click", closeModal);
-document.getElementById("modal-more").addEventListener("click", closeModal);
-modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
-addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
-
-const io = new IntersectionObserver((es) => es.forEach(e => {
-  if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
-}), { threshold: 0.12 });
-document.querySelectorAll(".rv").forEach(el => io.observe(el));
-
-// ---------- ambient node network ----------
-const cv = document.getElementById("mesh");
-const ctx = cv.getContext("2d");
-const INK = "#16171c", ACCENT = "#2b4eff", MUTED = "#8b877a";
-const NAMES = ["mac", "phone", "spark", "friend", "pc", "tablet", "tv", "watch", "laptop", "pi"];
-let W = 0, H = 0, DPR = 1;
-let pts = [], pulses = [], rings = [];
-const EXTRA = ["you", "desk", "kiosk", "car", "console", "fridge", "camera", "router", "drone", "toaster"];
-let mouse = { x: -1e4, y: -1e4 };
-let lastW = 0, resizeT = null;
-let avoid = { x: 0, y: 0, w: 0, h: 0 };
-const LINK = () => (W < 860 ? 120 : 160);
-const inCopy = (x, y) => x > avoid.x && x < avoid.x + avoid.w && y > avoid.y && y < avoid.y + avoid.h;
-
-function resize() {
-  lastW = innerWidth;
-  DPR = Math.min(devicePixelRatio || 1, innerWidth < 860 ? 1.5 : 2);
-  W = innerWidth; H = innerHeight;
-  cv.width = W * DPR; cv.height = H * DPR;
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  const mobile = W < 860;
-  const cr = document.querySelector(".copy h1").getBoundingClientRect();
-  const pad = mobile ? 10 : 20;
-  avoid = { x: cr.left - pad, y: cr.top - pad, w: cr.width + 2 * pad, h: cr.height + 2 * pad };
-  const n = Math.round(W * H / (mobile ? 16000 : 17000));
-  const nLit = Math.min(NAMES.length, mobile ? 6 : 9);
-  const names = NAMES.slice().sort(() => Math.random() - 0.5);
-  pts = [];
-  pulses = [];
-  for (let i = 0; i < n; i++) {
-    const lit = i < nLit;                                  // which points glow is shuffled below
-    let x = Math.random() * W, y = Math.random() * H;
-    for (let k = 0; lit && inCopy(x, y) && k < 30; k++) { x = Math.random() * W; y = Math.random() * H; }
-    pts.push({
-      x, y,
-      vx: (Math.random() - 0.5) * 0.12, vy: (Math.random() - 0.5) * 0.12,
-      r: 1.2 + Math.random() * 1.6,
-      lit, label: lit ? names[i] : null,   // blue lights are devices
-      ph: Math.random() * 6.28,
-    });
-  }
-  pts.sort(() => Math.random() - 0.5);
-}
-addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(resize, 120); });
-function init() { resize(); }
-
-function physics(now) {
-  for (const p of pts) {
-    if (p.lit && inCopy(p.x, p.y)) {
-      const cx = avoid.x + avoid.w / 2, cy = avoid.y + avoid.h / 2;
-      p.vx += (p.x - cx) * 0.0006; p.vy += (p.y - cy) * 0.0006;
-      p.vx = Math.max(-0.5, Math.min(0.5, p.vx)); p.vy = Math.max(-0.5, Math.min(0.5, p.vy));
-    }
-    p.x += p.vx; p.y += p.vy;
-    if (p.x < -20) p.x = W + 20; if (p.x > W + 20) p.x = -20;
-    if (p.y < -20) p.y = H + 20; if (p.y > H + 20) p.y = -20;
-  }
-  // send light from one device to another, hopping across the points in between
-  if (Math.random() < 0.035 && pulses.length < (W < 860 ? 4 : 7)) {
-    const lit = pts.filter(p => p.lit);
-    if (lit.length > 1) {
-      const a = lit[Math.floor(Math.random() * lit.length)];
-      let b = lit[Math.floor(Math.random() * lit.length)];
-      if (b === a) b = lit[(lit.indexOf(a) + 1) % lit.length];
-      sendLight(a, b);
-    }
-  }
-  for (let i = rings.length - 1; i >= 0; i--) { rings[i].t += 0.018; if (rings[i].t >= 1) rings.splice(i, 1); }
-  for (let i = pulses.length - 1; i >= 0; i--) {
-    const pu = pulses[i];
-    const a = pu.path[pu.i], b = pu.path[pu.i + 1];
-    const len = Math.max(20, Math.hypot(a.x - b.x, a.y - b.y));
-    pu.t += 2.6 / len;                                    // steady speed in px/frame
-    if (pu.t >= 1) { pu.t = 0; pu.i++; if (pu.i >= pu.path.length - 1) pulses.splice(i, 1); }
-  }
-}
-function sendLight(a, b) {
-  {
-    {
-      const path = [a]; let cur = a; const seen = new Set([a]);
-      for (let hop = 0; hop < 14 && cur !== b; hop++) {
-        let best = null, bd = Math.hypot(cur.x - b.x, cur.y - b.y);
-        for (const q of pts) {
-          if (seen.has(q) || (q !== b && inCopy(q.x, q.y))) continue;
-          const d = Math.hypot(cur.x - q.x, cur.y - q.y);
-          if (d > LINK() * 1.3) continue;
-          const dt = Math.hypot(q.x - b.x, q.y - b.y);
-          if (dt < bd) { bd = dt; best = q; }
-        }
-        if (!best) break;
-        path.push(best); seen.add(best); cur = best;
-      }
-      if (path.length > 1) pulses.push({ path, i: 0, t: 0 });   // no route? no light
-    }
-  }
-}
-// click the page: a new device appears there and the room greets it
-document.addEventListener("pointerdown", (e) => {
-  if (scrollY >= H || e.target.closest("a, button, input, .modal, #demo")) return;
-  const used = new Set(pts.filter(p => p.label).map(p => p.label));
-  const label = [...NAMES, ...EXTRA].find(n => !used.has(n)) || "device " + (used.size + 1);
-  const p = { x: e.clientX, y: e.clientY, vx: (Math.random() - 0.5) * 0.12, vy: (Math.random() - 0.5) * 0.12,
-              r: 2.2, lit: true, label, ph: Math.random() * 6.28, born: performance.now() };
-  pts.push(p);
-  rings.push({ x: p.x, y: p.y, t: 0 });
-  // the two nearest devices send light over to the newcomer
-  const near = pts.filter(q => q.lit && q !== p).sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y)).slice(0, 2);
-  near.forEach((q, i) => setTimeout(() => sendLight(q, p), 250 + i * 500));
-});
-
-function draw(now) {
-  ctx.clearRect(0, 0, W, H);
-  // dot grid: parallax + ripple around the cursor
-  const px = (mouse.x - W / 2), py = (mouse.y - H / 2);
-  const GS = W < 860 ? 27 : 19;
-  const gx0 = -((px * 0.016) % GS), gy0 = -((py * 0.016) % GS);
-  ctx.fillStyle = INK;
-  for (let gx = gx0 - GS; gx < W + GS; gx += GS) for (let gy = gy0 - GS; gy < H + GS; gy += GS) {
-    const dx = gx - mouse.x, dy = gy - mouse.y, d = Math.hypot(dx, dy);
-    let x = gx, y = gy, a = 0.14, r = 0.9;
-    if (d < 200 && d > 0.1) { const f = 1 - d / 200; x += dx / d * f * f * 20; y += dy / d * f * f * 20; a = 0.14 + f * 0.22; r = 0.9 + f * 0.6; }
-    ctx.globalAlpha = a; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-  const L = LINK();
-  // links
-  ctx.lineWidth = 1;
-  for (let i = 0; i < pts.length; i++) {
-    const a = pts[i];
-    for (let j = i + 1; j < pts.length; j++) {
-      const b = pts[j];
-      const d = Math.hypot(a.x - b.x, a.y - b.y);
-      if (d > L) continue;
-      const k = 1 - d / L;
-      ctx.strokeStyle = (a.lit && b.lit) ? ACCENT : INK;
-      ctx.globalAlpha = k * ((a.lit && b.lit) ? 0.22 : 0.09);
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-    }
-    // link to the cursor when close
-    const dm = Math.hypot(a.x - mouse.x, a.y - mouse.y);
-    if (dm < L * 1.1) {
-      ctx.strokeStyle = ACCENT; ctx.globalAlpha = (1 - dm / (L * 1.1)) * 0.35;
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(mouse.x, mouse.y); ctx.stroke();
-    }
-  }
-  ctx.globalAlpha = 1;
-  // pulses
-  for (const pu of pulses) {
-    const a = pu.path[pu.i], b = pu.path[pu.i + 1];
-    const x = a.x + (b.x - a.x) * pu.t, y = a.y + (b.y - a.y) * pu.t;
-    // the hop being travelled lights up behind the pulse
-    ctx.strokeStyle = ACCENT; ctx.lineWidth = 1.2; ctx.globalAlpha = 0.45;
-    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(x, y); ctx.stroke();
-    ctx.globalAlpha = 0.14;
-    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(b.x, b.y); ctx.stroke();
-    ctx.globalAlpha = 1; ctx.lineWidth = 1;
-    const g = ctx.createRadialGradient(x, y, 0, x, y, 14);
-    g.addColorStop(0, "rgba(43,78,255,0.7)"); g.addColorStop(1, "rgba(43,78,255,0)");
-    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, 14, 0, 7); ctx.fill();
-    ctx.fillStyle = ACCENT; ctx.beginPath(); ctx.arc(x, y, 2.6, 0, 7); ctx.fill();
-  }
-  // join ripples
-  for (const r of rings) {
-    ctx.strokeStyle = ACCENT; ctx.globalAlpha = (1 - r.t) * 0.6; ctx.lineWidth = 1.2;
-    ctx.beginPath(); ctx.arc(r.x, r.y, 6 + r.t * 70, 0, 7); ctx.stroke();
-  }
-  ctx.globalAlpha = 1; ctx.lineWidth = 1;
-  // nodes
-  for (const p of pts) {
-    if (p.lit) {
-      const glow = 0.55 + 0.45 * Math.sin(now / 900 + p.ph);
-      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 16);
-      g.addColorStop(0, `rgba(43,78,255,${0.28 * glow})`); g.addColorStop(1, "rgba(43,78,255,0)");
-      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, 16, 0, 7); ctx.fill();
-      ctx.fillStyle = ACCENT; ctx.globalAlpha = 0.6 + 0.4 * glow;
-      ctx.beginPath(); ctx.arc(p.x, p.y, p.r + 0.6, 0, 7); ctx.fill();
-      if (p.label && !inCopy(p.x, p.y)) {
-        ctx.font = "10px JetBrains Mono, monospace"; ctx.textAlign = "left";
-        ctx.fillStyle = MUTED; ctx.globalAlpha = 0.55 + 0.35 * glow;
-        ctx.fillText(p.label, p.x + 9, p.y + 3.5);
-      }
-    } else {
-      ctx.fillStyle = INK; ctx.globalAlpha = 0.28;
-      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-  }
-}
-
-let last = performance.now(), running = true;
-function loop(now) {
-  last = now;
-  if (running && scrollY < H) { physics(now); draw(now); }
-  requestAnimationFrame(loop);
-}
-document.addEventListener("visibilitychange", () => { running = !document.hidden; });
-addEventListener("mousemove", (e) => { mouse = { x: e.clientX, y: e.clientY }; });
-addEventListener("mouseleave", () => { mouse = { x: -1e4, y: -1e4 }; });
-
-// ---------- scroll-in room replay ----------
-const demoEl = document.getElementById("demo-lines");
-const demoLive = document.getElementById("demo-live");
-const DEMO = [
-  [0, `<b>mac</b> created room <span class="hl">RZBB</span> · host · pledged 6 GB`],
-  [800, `<b>+ phone</b> joined · pledged 0.9 GB`],
-  [1500, `<b>+ spark</b> joined · pledged 12 GB`],
-  [2200, `<b>+ friend</b> joined · pledged 4 GB`],
-  [3100, `<b>Qwen 3.8 27B</b> · layers dealt: spark <b>34</b> · mac <b>17</b> · friend <b>11</b> · phone <b>2</b>`],
-  [4200, `downloading shards<span class="dprog"><span></span></span>`],
-  [5700, `<span class="hl">cluster online</span> · <b>you:</b> what can a room full of gadgets do?`],
-];
-const DEMO_ANS = "run a model none of us could hold alone. each of us keeps a few layers, and every word you read took a lap through the whole room.";
-let demoState = "idle";
-function playDemo() {
-  if (demoState === "playing") return;
-  demoState = "playing";
-  demoEl.innerHTML = "";
-  demoLive.textContent = "LIVE";
-  demoLive.classList.remove("again");
-  for (const [t, html] of DEMO) setTimeout(() => { const d = document.createElement("div"); d.className = "dl"; d.innerHTML = html; demoEl.appendChild(d); }, t);
-  setTimeout(() => {
-    const a = document.createElement("div"); a.className = "da"; demoEl.appendChild(a);
-    let i = 0;
-    const iv = setInterval(() => {
-      i++;
-      a.innerHTML = `<b>THE ROOM ›</b> ` + DEMO_ANS.slice(0, i) + (i < DEMO_ANS.length ? "▌" : "");
-      if (i >= DEMO_ANS.length) { clearInterval(iv); demoState = "done"; demoLive.textContent = "↺ replay"; demoLive.classList.add("again"); }
-    }, 42);
-  }, 6600);
-}
-demoLive.addEventListener("click", () => { if (demoState === "done") playDemo(); });
-new IntersectionObserver((es) => { if (es[0].isIntersecting && demoState === "idle") playDemo(); }, { threshold: 0.35 })
-  .observe(document.getElementById("demo"));
-
-init();
-requestAnimationFrame(loop);
-</script>
+<script defer src="/site/js/swarm.js"></script>
+<script defer src="/site/js/apps.js"></script>
+<script defer src="/site/js/hl.js"></script>
+<script defer src="/site/js/stars.js"></script>
+<script defer src="/site/js/sparkle.js"></script>
+<script defer src="/site/js/demo.js"></script>
 </body>
 </html>

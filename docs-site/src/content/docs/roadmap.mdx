@@ -1,0 +1,67 @@
+---
+title: Roadmap
+eyebrow: Contributing
+description: What is being worked on, how items are prioritized, and what shipped recently.
+sidebar:
+  label: Roadmap
+  order: 6
+---
+
+{/*
+Sources (origin/main 2b39a86; every roadmap line checked against the code 2026-10-11):
+- roadmap/README.md (priorities P0/P1/P2, areas, numbered design files, pinned issue #83; several items stale)
+- GitHub issue states checked 2026-09-30 (#59, #70, #73, #75, #76, #81 closed; #1, #69, #77 still open though shipped)
+- Merged PRs: #259 (TURN relay, signaling fallback -> #1, part of #15), #242 (disk checkpoints -> #69),
+  #243 (tokenizer -> #70), #251 (#73), #238 (#76), #250 (part of #77), #252 (part of #71; int8 KV stays off by default),
+  #239 (part of #74), #247/#248 (part of #75), #235 (first milestone of #16), #236 (#78), #234 (closes #59),
+  #241 (#81), #231/#260/#261 (pooled serve, #4), #258 (auto re-deal experimental, wake lock: #3, #44), #233
+*/}
+
+import { Aside, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+The roadmap lives in [`roadmap/README.md`](https://github.com/Nehanth/pooled/blob/main/roadmap/README.md), grouped by area (Kernels, Inference, Harness, Loading, Networking, Room, UI, Infra, Tests). Design notes sit next to it as numbered files, and the pinned issue [#83](https://github.com/Nehanth/pooled/issues/83) has the same list as a checklist.
+
+<CardGrid>
+  <LinkCard title="Roadmap" description="Every item with its priority, design note and issue." href="https://github.com/Nehanth/pooled/blob/main/roadmap/README.md" />
+  <LinkCard title="Pinned issue #83" description="The same list as a checklist on GitHub." href="https://github.com/Nehanth/pooled/issues/83" />
+</CardGrid>
+
+## Priorities
+
+| Priority | Meaning |
+|---|---|
+| **P0** | Now. Broken, wrong, or the biggest thing holding rooms back. |
+| **P1** | Next. Planned and ready to build. |
+| **P2** | Later, or needs a design note first. |
+
+Issues get the `area:` label of their section.
+
+## Top of the list
+
+- **SSD expert offload** (P1, [design note](https://github.com/Nehanth/pooled/blob/main/roadmap/32-ssd-expert-offload.md)). Stream a MoE's experts from NVMe when VRAM and RAM can't hold them, the next model size up on a Mac and a PC. Landed: the room node's disk reader and `--disk` on `pooled join` / `pooled host` (steps 2-5), and the tab's disk tier (step 8), which runs Qwen3.8-Flash-Next in a Chrome tab (#368) with batched prompt reading (#400-#405).
+- **Batched multi-session decode** (P1, [#72](https://github.com/Nehanth/pooled/issues/72)). Agents with subagents send requests at the same time; today they queue behind each other.
+- **Host-authoritative room page** (P1, [#17](https://github.com/Nehanth/pooled/issues/17)). Only the host may load a model or start the room's model; the room node already checks.
+- **Reproducible benchmarks** (P1, [#21](https://github.com/Nehanth/pooled/issues/21)). A protocol, one result format and a device matrix; a contributor is taking the first slice.
+- **Pinned model revisions** (P1, [#19](https://github.com/Nehanth/pooled/issues/19)), so an upstream re-upload can't mix old and new ranges.
+
+## Shipped recently
+
+As of October 11, 2026, every roadmap line was checked against the code:
+
+- **`@pooled/cli` 0.4:** `pooled serve` with OpenAI and Anthropic endpoints and tool calling, `pooled host` / `join` / `chat` on a native peer, and the OpenClaw plugin ([#4](https://github.com/Nehanth/pooled/issues/4), [#11](https://github.com/Nehanth/pooled/issues/11)).
+- **Bigger models:** MoE experts kept in system RAM (`--ram`), so one RTX 5070 PC runs the 35B MoE alone at about 38-45 tok/s.
+- **Security:** channel-bound join auth, where keys and passes are proved, never sent.
+- **Networks:** the TURN relay, in the browser and now the CLI ([#1](https://github.com/Nehanth/pooled/issues/1)).
+- **Speed and sessions:** the prefill kernels ([#2](https://github.com/Nehanth/pooled/issues/2)); checkpoints on disk and prefix reuse across agent turns ([#69](https://github.com/Nehanth/pooled/issues/69), [#73](https://github.com/Nehanth/pooled/issues/73)); GPU sampling ([#26](https://github.com/Nehanth/pooled/issues/26)); the GEMV 8-row fix ([#47](https://github.com/Nehanth/pooled/issues/47)).
+
+<Aside type="note">
+The [changelog](/docs/reference/changelog) has the full list of what changed in each release.
+</Aside>
+
+## Pick something up
+
+1. Find an item in the roadmap and read its design note, if it has one.
+2. Comment on its issue before you start, so two people don't build the same thing.
+3. P2 items and anything that changes the protocol, the model output or what peers can see need a design note first. See [Contributing](/docs/contributing#changes-that-need-a-design-note-first).
+
+Benchmark reports from hardware we don't have always help. See [Benchmarking](/docs/contributing/benchmarks#report-numbers-from-your-hardware).

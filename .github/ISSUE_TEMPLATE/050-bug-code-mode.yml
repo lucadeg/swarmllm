@@ -1,0 +1,35 @@
+name: "Bug: Code mode"
+description: The coding agent gets stuck, writes broken files, or the preview does not work.
+labels: ["bug", "area: code"]
+body:
+  - type: input
+    id: url
+    attributes: { label: Site, placeholder: "pooled.run or pooled-dev.vercel.app (staging)" }
+    validations: { required: true }
+  - type: input
+    id: model
+    attributes: { label: Model and devices, placeholder: "Qwen 3.6 35B MoE on a MacBook and a desktop" }
+    validations: { required: true }
+  - type: textarea
+    id: ask
+    attributes: { label: What you asked the agent, description: "The exact request, e.g. \"build a tetris game\"." }
+    validations: { required: true }
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where it went wrong
+      options:
+        - "Tool calls (the agent printed a call instead of running it, or looped)"
+        - "Files (wrong or missing content)"
+        - "Preview (blank, not loading, or not updating)"
+        - "Error reading (the agent did not see or fix an error)"
+        - "Peers (another device did not see the files or preview)"
+        - "Other"
+    validations: { required: true }
+  - type: textarea
+    id: what
+    attributes: { label: What happened, description: "What you expected and what you saw. Paste the last few steps of the agent's timeline if you can." }
+    validations: { required: true }
+  - type: textarea
+    id: console
+    attributes: { label: Browser console output, render: text }

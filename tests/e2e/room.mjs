@@ -5,7 +5,7 @@
 //   npm run e2e -- --phone                 host + worker + phone, wire on (default stripe4)
 //   npm run e2e -- --wire off              old PeerJS message path
 //   npm run e2e -- --model qwen3-1.7b --prompt "..." --rounds 3
-//   npm run e2e -- --phone --model qwen3.8-27b   27B from models/q38/model.gguf, pledges 14+2+0.5 GB
+//   npm run e2e -- --phone --model qwen3.8-27b   27B from models/q38/model.gguf, host pledge sized to the model's need
 //   npm run e2e -- --devices 16 --phones 8 --model qwen3.8-27b   16 tabs, half phone-shaped, 1 GB / 0.5 GB pledges
 //   Signaling runs on a local PeerServer (node_modules/.bin/peerjs) unless --signal cloud.
 //
@@ -16,6 +16,7 @@ import { chromium } from "playwright";
 import http from "http";
 import fs from "fs";
 import path from "path";
+import { NEED_GB } from "../../room/models.js";
 
 const arg = (k, d) => { const i = process.argv.indexOf("--" + k); return i > 0 ? process.argv[i + 1] : d; };
 const flag = (k) => process.argv.includes("--" + k);
@@ -29,9 +30,9 @@ const PHONE = PHONES > 0;
 // signaling: our own PeerServer on this machine (default), or the public PeerJS cloud with --signal cloud
 const SIGNAL_PORT = +arg("signal-port", 9000);
 const CLOUD = arg("signal", "local") === "cloud";
-// pledges in GB: host,worker,phone. The 27B needs 16.5 GB in the room.
+// pledges in GB: host,worker,phone. The model's need comes from room/models.js (the 27B needs 17 GB).
 // host pledge: whatever the joiners (1 GB desktop, 0.5 GB phone) leave of the model's need, at least 2 GB
-const NEED = { "qwen3.8-27b": 16.5, "qwen3-4b": 4.6, "qwen3-1.7b": 2.0, "qwen3-0.6b": 0.8 }[MODEL] || 2;
+const NEED = NEED_GB[MODEL] || 2;
 const HOST_GB = arg("host-gb", String(Math.max(2, Math.ceil(NEED + 0.5 - (DEVICES - 1 - PHONES) * 1 - PHONES * 0.5))));
 // GGUF files already on this machine stand in for Hugging Face (Range requests served from disk)
 const LOCAL = { "Qwen3.8-27B-Q4_0.gguf": "models/q38/model.gguf", "Qwen3-0.6B-Q8_0.gguf": "models/qwen/model.gguf", "Qwen3-1.7B-Q8_0.gguf": "models/qwen17/model.gguf" };
@@ -44,7 +45,7 @@ const srv = http.createServer((q, r) => {
   if (!p.startsWith(ROOT) || !fs.existsSync(p) || fs.statSync(p).isDirectory()) { r.statusCode = 404; r.end(); return; }
   r.setHeader("content-type", MIME[path.extname(p)] || "application/octet-stream"); fs.createReadStream(p).pipe(r);
 }).listen(PORT, "127.0.0.1");
-const BASE = `http://127.0.0.1:${PORT}/p2p.html?wire=${WIRE}` + (CLOUD ? "" : `&signal=127.0.0.1:${SIGNAL_PORT}`);
+const BASE = `http://127.0.0.1:${PORT}/p2p.html?ask=0&split=memory&wire=${WIRE}` + (CLOUD ? "" : `&signal=127.0.0.1:${SIGNAL_PORT}`);
 import { spawn } from "child_process";
 let peerServer = null;
 if (!CLOUD) {
@@ -63,7 +64,7 @@ import https from "https";
 import { execSync } from "child_process";
 import os from "os";
 const TLS_PORT = PORT + 1;
-const tlsDir = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-e2e-"));
+const tlsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pooled-e2e-"));
 execSync(`openssl req -x509 -newkey rsa:2048 -nodes -keyout ${tlsDir}/k.pem -out ${tlsDir}/c.pem -days 2 -subj /CN=127.0.0.1 2>/dev/null`);
 const wsrv = https.createServer({ key: fs.readFileSync(`${tlsDir}/k.pem`), cert: fs.readFileSync(`${tlsDir}/c.pem`) }, (q, r) => {
   const p = path.join(ROOT, decodeURIComponent(q.url.split("?")[0]));
@@ -110,14 +111,27 @@ try {
   for (const [name, p] of Object.entries(tabs)) { await p.fill("#name-input", name + "-e2e"); await p.fill("#join-gb", name === "host" ? HOST_GB : name.startsWith("phone") ? "0.5" : "1"); }
   if (PHONE) log("phone tabs:", PHONES, "iPhone UA:", await Object.values(tabs).filter((_, i) => i === Object.keys(tabs).findIndex((k) => k.startsWith("phone")))[0].evaluate(() => navigator.userAgent.includes("iPhone")));
   await tabs.host.click("#create-btn");
-  await tabs.host.waitForFunction(() => /[A-Z0-9]{4}/.test(document.getElementById("side-code").textContent), null, { timeout: 30000 });
-  const code = (await tabs.host.textContent("#side-code")).trim().match(/[A-Z0-9]{4}/)[0];
+  await tabs.host.waitForFunction(() => /[A-Z0-9]{3}-?[A-Z0-9]{3}|[A-Z0-9]{4}/.test(document.getElementById("side-code").textContent), null, { timeout: 30000 });
+  const code = (await tabs.host.textContent("#side-code")).trim().replace("-", "").match(/[A-Z0-9]{6}|[A-Z0-9]{4}/)[0];
   log("room", code);
   for (const name of Object.keys(tabs).filter((k) => k !== "host")) { await tabs[name].fill("#code-input", code); await tabs[name].click("#join-btn"); await tabs[name].waitForTimeout(150); }
   const N = Object.keys(tabs).length;
   for (const p of Object.values(tabs)) await p.waitForFunction((n) => document.querySelectorAll(".peer-card").length >= n, N, { timeout: 60000 + 2000 * N });
   log(N, "devices in room");
   await tabs.host.waitForTimeout(3000);   // stripe connections
+  // from the load card to the chat, no tab may show the model picker in between (it did for the
+  // seconds between the host's own layers and the room's: the "Pick a model" flash)
+  for (const p of Object.values(tabs)) await p.evaluate(() => {
+    const panel = document.getElementById("ai-panel"), w = window.__pickFlash = { armed: false, since: 0, shows: [] };
+    const check = () => {
+      const online = panel.classList.contains("online"), loading = panel.classList.contains("loading");
+      if (loading) w.armed = true;
+      const picker = w.armed && !online && !loading;
+      if (picker && !w.since) w.since = performance.now();
+      if (!picker && w.since) { w.shows.push(Math.round(performance.now() - w.since)); w.since = 0; }
+    };
+    new MutationObserver(check).observe(panel, { attributes: true, attributeFilter: ["class"] });
+  });
   await tabs.host.selectOption("#ai-model", MODEL);
   await tabs.host.click("#ai-start");
   log("model start pressed");
@@ -130,6 +144,9 @@ try {
   log("online:", await tabs.host.textContent("#ai-status"));
   const split = await tabs.host.evaluate(() => [...document.querySelectorAll("#chat-log div")].map((d) => d.textContent).filter((t) => /layer split/.test(t)).slice(-1)[0] || "");
   log(split);
+  const pickFlash = {};
+  for (const [n, p] of Object.entries(tabs)) { const ms = await p.evaluate(() => window.__pickFlash.shows); if (ms.length) pickFlash[n] = ms; }
+  log("model picker shown between the load card and the chat (ms):", JSON.stringify(pickFlash));
   const results = [];
   for (let r = 0; r < ROUNDS; r++) {
     await tabs.host.fill("#ai-prompt", PROMPT); await tabs.host.click("#ai-send");
@@ -139,13 +156,13 @@ try {
     results.push({ status: st, reply });
     await tabs.host.waitForTimeout(1000);
   }
-  const wire = {}; for (const [n, p] of Object.entries(tabs)) wire[n] = await p.evaluate(() => window.swarmDebug?.());
+  const wire = {}; for (const [n, p] of Object.entries(tabs)) wire[n] = await p.evaluate(() => window.pooledDebug?.());
   // the room's own log carries GPU validation errors that never reach the console
   const roomErrs = {}; for (const [n, p] of Object.entries(tabs)) roomErrs[n] = await p.evaluate(() => [...document.querySelectorAll("#chat-log div")].map((d) => d.textContent).filter((t) => t.includes("\u26a0")).map((t) => t.slice(0, 160)));
   const nRoomErrs = Object.values(roomErrs).reduce((a, e) => a + e.length, 0);
-  const ok = results.every((s) => s.status.startsWith("ready")) && Object.values(errs).every((e) => e.length === 0) && nRoomErrs === 0;
+  const ok = results.every((s) => s.status.startsWith("ready")) && Object.values(errs).every((e) => e.length === 0) && nRoomErrs === 0 && !Object.keys(pickFlash).length;
   const linkSummary = Object.fromEntries(Object.entries(wire).map(([n, l]) => [n, (l || []).map((x) => `${x.name}:${x.chans}ch ${x.sent}/${x.recv}`).join(", ")]));
-  console.log(JSON.stringify({ ok, wire: WIRE, model: MODEL, devices: DEVICES, phones: PHONES, code, split, results, links: DEVICES > 6 ? Object.fromEntries(Object.entries(linkSummary).slice(0, 4)) : linkSummary, errors: Object.fromEntries(Object.entries(errs).filter(([, v]) => v.length)), roomErrors: { count: nRoomErrs, first: Object.fromEntries(Object.entries(roomErrs).filter(([, v]) => v.length).map(([k, v]) => [k, v.slice(0, 2)]).slice(0, 3)) } }, null, 1));
+  console.log(JSON.stringify({ ok, wire: WIRE, model: MODEL, devices: DEVICES, phones: PHONES, code, split, pickFlash, results, links: DEVICES > 6 ? Object.fromEntries(Object.entries(linkSummary).slice(0, 4)) : linkSummary, errors: Object.fromEntries(Object.entries(errs).filter(([, v]) => v.length)), roomErrors: { count: nRoomErrs, first: Object.fromEntries(Object.entries(roomErrs).filter(([, v]) => v.length).map(([k, v]) => [k, v.slice(0, 2)]).slice(0, 3)) } }, null, 1));
   process.exitCode = ok ? 0 : 1;
 } catch (e) {
   console.error("FAILED:", String(e).slice(0, 400));

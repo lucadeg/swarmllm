@@ -1,11 +1,11 @@
 {
-  "name": "swarmllm",
-  "version": "0.2.0",
-  "description": "Peer-to-peer LLM inference across browser tabs: a from-scratch WebGPU engine and a WebRTC runtime that split one model over the devices in a room.",
-  "homepage": "https://swarmllm.ai",
+  "name": "pooled",
+  "version": "2.0.0",
+  "description": "Peer-to-peer LLM inference in the browser: each device holds some of the layers, tabs talk over WebRTC, and our own WebGPU kernels do the math.",
+  "homepage": "https://pooled.run",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Nehanth/swarmllm.git"
+    "url": "https://github.com/Nehanth/pooled.git"
   },
   "license": "MIT",
   "author": "Nehanth Narendrula",
@@ -13,16 +13,24 @@
   "private": true,
   "scripts": {
     "test": "deno test --allow-read tests/unit",
-    "check": "deno check engine/*.js && node --check tests/*.js benchmarks/*.js",
+    "test:runtime": "node tests/headless/runtime.mjs",
+    "test:runtime:q38": "deno run --unstable-webgpu --allow-read --allow-env --allow-write tests/test_runtime.js --q38",
+    "test:packages": "node --test packages/room-node/test/*_test.mjs packages/openclaw/test/*_test.mjs",
+    "check": "deno check engine/*.js && for f in api/*.mjs tests/*.js tests/sim/*.js benchmarks/*.js room.js room/*.js harness/*.js site/js/*.js engine/wgsl/*.js cli/bin/*.js cli/lib/*.js cli/test/*.mjs tests/bench/*.js tests/bench/*.mjs tests/e2e/serve.mjs tests/e2e/serve_record.mjs tests/e2e/serve_v2_smoke.mjs tests/e2e/serve_responses.mjs tests/e2e/serve_messages.mjs tests/e2e/agents/*.mjs packages/*/*.js packages/*/src/*.js packages/*/test/*.mjs; do node --check \"$f\" || exit 1; done",
     "test:gpu": "tests/run.sh quick",
     "test:q38": "tests/run.sh q38",
+    "test:q38once": "tests/run.sh q38once",
+    "test:cache": "deno test --allow-read --allow-write tests/unit/weight_cache_test.js",
     "test:all": "tests/run.sh all",
+    "test:runsh": "tests/run.sh selftest",
     "bench": "deno run --unstable-webgpu --allow-read --allow-env benchmarks/bench.js",
-    "bench:q38": "MODEL=q38 deno run --unstable-webgpu --allow-read --allow-env benchmarks/bench.js",
+    "bench:q38": "MODEL=q38 deno run --unstable-webgpu --allow-read --allow-env --allow-write=${WEIGHT_CACHE:-$HOME/.cache/swarmllm-weights} benchmarks/bench.js",
     "bench:breakdown": "deno run --unstable-webgpu --allow-read --allow-env benchmarks/bench_breakdown.js",
     "serve": "npx -y serve -l 8080 .",
     "deploy:staging": "scripts/deploy-staging.sh",
-    "e2e": "node tests/e2e/room.mjs"
+    "e2e": "node tests/e2e/room.mjs",
+    "e2e:code": "node tests/e2e/harness_tetris.mjs",
+    "test:e2e:preview": "node tests/e2e/preview_browser.mjs"
   },
   "engines": {
     "deno": ">=2.0"

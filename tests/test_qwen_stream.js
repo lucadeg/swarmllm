@@ -1,4 +1,4 @@
-// Qwen3-0.6B Q8_0 on the WebGPU engine vs the CPU golden reference.
+// Qwen3-0.6B Q8_0 through the streamed-upload path (gpuUploadEntry) vs the CPU golden reference.
 import { makeTokenizer, DenseEngine, argmax } from "../engine/engine.js";
 import { parseGGUFHeader, ggufWeights, gpuUploadEntry, GGML_EMBED } from "../engine/gguf.js";
 
@@ -56,5 +56,5 @@ console.log("generated:", JSON.stringify(tok.decode(gen)));
 console.log("golden   :", JSON.stringify(tok.decode(golden.generated)));
 console.log(`speed: ${(gen.length / secs).toFixed(1)} tok/s`);
 const ok = JSON.stringify(gen) === JSON.stringify(golden.generated) && top[0] === golden.logitsTop[0][0];
-console.log(ok ? "\nQWEN Q8 PASS ✓" : "\nQWEN Q8 FAIL ✗");
+console.log(ok ? "\nQWEN Q8 STREAM PASS ✓" : "\nQWEN Q8 STREAM FAIL ✗");
 Deno.exit(ok ? 0 : 1);

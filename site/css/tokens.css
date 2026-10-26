@@ -1,0 +1,36 @@
+/* Pooled design tokens, shared by the landing (index.html) and the room (p2p.html).
+   The room links this file and maps its own names onto these. Edit values here, not in either page. */
+:root{
+  /* surfaces and ink */
+  --bg:#F6F5F1; --bg-2:#FBFAF7; --bg-3:#EFEDE7; --white:#FFFFFF;
+  --ink:#14161D; --ink-2:#4B4E58; --ink-3:#5E616B; --ink-4:#6B6E78;
+  --rule:#E4E2DA; --rule-2:#ECEAE3; --rule-3:#D6D3C9;
+
+  /* blue ramp: every blue in the product is one of these */
+  --blue-50:#EAEDFE; --blue-200:#B9C6FF; --blue-400:#7C8FFF; --blue-500:#2A45E0; --blue-600:#2239C8; --blue-700:#1C33B8;
+  --blue:var(--blue-500); --blue-text:var(--blue-600); --blue-soft:var(--blue-50); --blue-glow:rgba(42,69,224,.35);
+
+  /* one color per device, in join order; a device that only asks uses --ink-4 */
+  --d0:#2A45E0; --d1:#2B2F3C; --d2:#7C8FFF; --d3:#5E616B; --d4:#B9C6FF; --d5:#1C33B8;
+
+  /* status and diffs */
+  --ok:#1A7F37; --del:#B42318;
+  --diff-add:#E9F4EC; --diff-del:#FBEAE8; --diff-del-ink:#6B1D16;
+
+  /* the dark app frame */
+  --game:#0B0F1F; --on-game:#EEF0F6; --on-game-2:#A9B0C4;
+
+  /* type */
+  --display:"Funnel Display","Funnel Display Fallback","Geist",ui-sans-serif,system-ui,sans-serif;
+  --sans:"Geist","Geist Fallback",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"Geist Mono","Geist Mono Fallback",ui-monospace,"SF Mono",Menlo,monospace;
+  --t-xs:11px; --t-sm:12px; --t-md:13px; --t-base:14px; --t-lg:15px; --t-xl:17px;
+  --d-sm:22px; --d-md:26px; --d-lg:36px; --d-xl:clamp(38px,5vw,60px);
+
+  /* radius */
+  --r-xs:4px; --r-sm:8px; --r-md:12px; --r-lg:16px; --r-pill:999px;
+
+  /* motion */
+  --ease:cubic-bezier(.2,.7,.2,1);
+  --glide:cubic-bezier(.65,0,.25,1);
+}

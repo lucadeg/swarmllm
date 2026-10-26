@@ -1,0 +1,79 @@
+---
+title: Start a room
+eyebrow: Getting started
+description: Open a room on one laptop, pick a model and ask your first question. One laptop is enough for the smallest model.
+sidebar:
+  label: Start a room
+  order: 2
+---
+import { Steps } from '@astrojs/starlight/components';
+
+{/*
+Sources (for the fact-checker):
+- p2p.html: join screen labels ("Memory", "Start a room", "Have a code?", "Join"), "Pick a model", "Start the model", "Give N GB from this device", "This device gives"
+- room/models.js pickCtx() (the 1.7B: 16K, else 8K when the pledges are short), needText() ("5.6 GB (4 GB at 8K)")
+- room.js: updateNeed() (need text, "Give N GB", download note), metaPromise (default pledge: half of maxBufferSize, at least min(4 GB, budget) on a computer), start() (6-character code), aiStartAnywhere() (anyone can press Start; model host picked by room/plan.js pickModelHost), leave dialog text (leave-why)
+- room/models.js: NEED_GB, FILE_GB
+- room/joingate.js (CODE_LEN = 6, formatCode "4TK-G9P")
+*/}
+
+You need one laptop or desktop with Chrome, Edge or Safari 26. That is enough for the smallest model.
+
+<Steps>
+
+1. **Open [pooled.run/room](https://pooled.run/room).**
+
+   The page checks the browser first. If it can't use the GPU, it tells you how to fix it. See [Browsers and requirements](/docs/browsers).
+
+2. **Name this device and check Memory.**
+
+   The name is what others in the room see. **Memory** is how many GB this device gives the room. The default is usually fine.
+
+3. **Press Start a room.**
+
+   You get a room code like `4TK-G9P` in the header. Other devices use it to [join](/docs/invite).
+
+4. **Pick a model.**
+
+   The picker shows what each model needs and what the room has, for example `Needs 5.6 GB (4 GB at 8K). The room has 4 GB.` On one laptop, pick **Qwen3 1.7B**. With less than 5.6 GB it runs with an 8K context instead of 16K, and says so. See [Pick a model](/docs/models).
+
+5. **Press Start the model.**
+
+   The first start downloads the model and caches it in the browser. The 1.7B is a 1.8 GB download. Later starts are faster.
+
+6. **Ask something.**
+
+   Type in **Message the room** and press **Send**. The answer streams in word by word.
+
+</Steps>
+
+:::tip
+Keep the room's tab in front and the laptop plugged in. A background tab or a sleeping screen can stall the room.
+:::
+
+## If Start the model is greyed out
+
+The room doesn't have enough memory for that model. You can:
+
+- raise **This device gives**, or press **Give N GB from this device**,
+- [invite another device](/docs/invite), or
+- pick a smaller model.
+
+## What next
+
+- [Invite devices](/docs/invite) to run a bigger model.
+- [Chat](/docs/chat): how questions, answers and the queue work.
+- [Code mode](/docs/code): have the model build a small app.
+- [Serve API](/docs/serve): use the room from your own tools.
+
+## Leaving
+
+Click the Pooled logo to leave. If you opened the room, leaving ends it for everyone. Anyone else can leave and join again with the same code.
+
+Reloading the tab does not end the room. The device comes back in under the same name. See [Device drops and recovery](/docs/rooms/recovery).
+
+## Details
+
+- **Default memory.** A computer starts at half of what its GPU reports it can hold, and at least 4 GB when the GPU allows it.
+- **Who hosts.** Anyone in the room can press Start. The room picks the host: a computer before a phone, usually the one with the fastest GPU. The host runs the first and last steps of the model and picks each word. See [How layers are split](/docs/rooms/split).
+- **First load times** for each model are in [Benchmarks](/docs/internals/benchmarks).

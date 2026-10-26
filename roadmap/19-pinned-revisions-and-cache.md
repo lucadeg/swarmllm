@@ -1,6 +1,6 @@
 # 19 · Pinned model revisions, weight integrity, and cache management
 
-**Phase:** now (pinning, stamps, persist) / next (manager UI, per-tensor hashes) · **Status:** planned · _now (pinning, stamps, persist) / next (manager UI, per-tensor hashes) · days · high_
+**Phase:** now (pinning, stamps, persist) / later (manager UI, per-tensor hashes) · **Status:** planned · includes clearing one cached model instead of all of them (#59)
 
 ## Why
 
@@ -9,7 +9,7 @@ All 13 URLs in room/models.js are `resolve/main`, the cache key is URL + range a
 
 ## Design
 
-See the merged proposals in [docs/roadmap-review.md](../docs/roadmap-review.md) under item 19; turn them into a design note before building.
+See the merged proposals in [docs/archive/roadmap-review.md](../docs/archive/roadmap-review.md) under item 19; turn them into a design note before building.
 
 ## Done when
 

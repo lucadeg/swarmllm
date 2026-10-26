@@ -1,6 +1,6 @@
 # Tech stack
 
-What SwarmLLM is built from, and why each piece was chosen. There is no build step and no framework: the site is three HTML/JS entry points plus ES modules.
+What Pooled is built from, and why each piece was chosen. There is no build step and no framework. The entry points are `index.html` (the landing page, with `site/`), `p2p.html` + `room.js` (the room, served at `/room` and `/r/<code>`), and the ES modules under `engine/`, `room/` and `harness/` (Code mode).
 
 | Layer | Technology | Why |
 |---|---|---|
@@ -11,8 +11,10 @@ What SwarmLLM is built from, and why each piece was chosen. There is no build st
 | Weight cache | Browser **Cache API** with a size stamp | Rejoining a room reloads from disk in seconds; the stamp guards against truncated entries. |
 | Peer connections | **WebRTC** data channels via PeerJS signaling | Direct browser-to-browser, cross-network (STUN hole-punching), encrypted (DTLS). The broker only introduces peers; no model traffic touches a server. |
 | Wire format | Binary frames, activations as f16 | 10 KB per hop for a 5,120-wide hidden state; one third of the original JSON/f32 bytes. |
-| Speculation | The model's own multi-token-prediction (`nextn`) layer | No second model needed; verification by the full model keeps output bit-identical. |
-| Hosting | Static files on Vercel (`/room` rewrites to `p2p.html`) | Nothing runs server-side. Staging deploys from the feature branch, production from `main`. |
+| Speculation | The model's own multi-token-prediction (`nextn`) layer, plus prompt-lookup drafts | No second model needed; verification by the full model keeps output bit-identical. |
+| Mixture of experts | Router, top-k experts and shared expert as WGSL kernels (`engine/wgsl/moe.js`) | Qwen 3.6 35B MoE reads ~3B parameters per token, so it decodes several times faster than the 27B. Rooms split it by layers like the dense models. |
+| Code mode | Our own agent loop (`harness/`), a sandboxed preview frame, File System Access or browser storage for files | Runs on the room's model with nothing on a server. See [design/harness-app.md](design/harness-app.md). |
+| Hosting | Static files on Vercel at [pooled.run](https://pooled.run) (`/room` and `/r/<code>` rewrite to `p2p.html`; swarmllm.ai redirects) | Nothing runs server-side. Staging (pooled-dev.vercel.app) deploys from `feat/engine-opt`, production from `main`. See [../RELEASE.md](../RELEASE.md). |
 | Testing | Deno (WebGPU headless) + golden JSON references + CPU reference implementations | GPU tests compare argmax and logits against references; CI runs the no-GPU unit tests. |
 | Native reference | llama.cpp (`llama-bench`) on the same GGUF | The honest baseline for "how fast is native on this hardware". |
 
@@ -27,7 +29,7 @@ What SwarmLLM is built from, and why each piece was chosen. There is no build st
 
 ## Models
 
-Qwen 3.8 27B (hybrid Gated-DeltaNet + attention, `qwen35` architecture family), Qwen3 0.6B/1.7B/4B (dense), SmolLM2 135M. See [models.md](models.md).
+Qwen 3.8 27B (hybrid Gated-DeltaNet + attention, `qwen35` architecture family), Qwen 3.6 35B MoE (`qwen35moe`), Qwen3 0.6B/1.7B/4B (dense), SmolLM2 135M. See [models.md](models.md).
 
 ## Things deliberately not used
 

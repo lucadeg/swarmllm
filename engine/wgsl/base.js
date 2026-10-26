@@ -29,7 +29,7 @@ fn matvec(@builtin(global_invocation_id) gid: vec3<u32>) {
   mv_y[r] = acc;
 }
 
-// --- matvec_q8: y = W x with W in Q8_0 (int8 + per-32-block f32 scale) ---
+// --- matvec_q8: y = W x with W in Q8_0 (int8 + per-32-block f16 scale) ---
 @group(1) @binding(0) var<storage, read> q8_qs: array<u32>;   // int8s packed 4/word
 @group(1) @binding(1) var<storage, read> q8_sc: array<u32>;   // f16 scales, 2 per word
 fn q8s(i: u32) -> f32 { return unpack2x16float(q8_sc[i >> 1u])[i & 1u]; }
@@ -78,7 +78,7 @@ fn head_norm(@builtin(global_invocation_id) gid: vec3<u32>) {
   for (var i: u32 = 0u; i < cfg.headDim; i++) { hn_v[off + i] *= inv * hn_w[i]; }
 }
 
-// --- matvec_q4: y = W x with W in Q4_0 (packed nibbles + per-32-block f32 scale) ---
+// --- matvec_q4: y = W x with W in Q4_0 (packed nibbles + per-32-block f16 scale) ---
 // nibble layout per block: byte j holds elem j (low nibble) and elem j+16 (high)
 @group(1) @binding(0) var<storage, read> q4_qs: array<u32>;
 @group(1) @binding(1) var<storage, read> q4_sc: array<u32>;   // f16 scales, 2 per word
@@ -126,7 +126,13 @@ var<workgroup> rn_partial: array<f32, 256>;
 fn rmsnorm(@builtin(local_invocation_id) lid: vec3<u32>) {
   let t = lid.x;
   var ss: f32 = 0.0;
-  for (var i: u32 = t; i < rn_n; i += 256u) { let v = rn_x[i]; ss += v * v; }
+  // four loads in flight, then the same in-order sum (bit-identical to the one-at-a-time loop)
+  var i: u32 = t;
+  for (; i + 768u < rn_n; i += 1024u) {
+    let v0 = rn_x[i]; let v1 = rn_x[i + 256u]; let v2 = rn_x[i + 512u]; let v3 = rn_x[i + 768u];
+    ss += v0 * v0; ss += v1 * v1; ss += v2 * v2; ss += v3 * v3;
+  }
+  for (; i < rn_n; i += 256u) { let v = rn_x[i]; ss += v * v; }
   rn_partial[t] = ss;
   workgroupBarrier();
   var stride: u32 = 128u;
@@ -136,7 +142,13 @@ fn rmsnorm(@builtin(local_invocation_id) lid: vec3<u32>) {
     stride = stride / 2u;
   }
   let inv = inverseSqrt(rn_partial[0] / f32(rn_n) + cfg.eps);
-  for (var i: u32 = t; i < rn_n; i += 256u) { rn_y[i] = rn_x[i] * inv * rn_w[i]; }
+  var j: u32 = t;
+  for (; j + 768u < rn_n; j += 1024u) {
+    let x0 = rn_x[j]; let x1 = rn_x[j + 256u]; let x2 = rn_x[j + 512u]; let x3 = rn_x[j + 768u];
+    let w0 = rn_w[j]; let w1 = rn_w[j + 256u]; let w2 = rn_w[j + 512u]; let w3 = rn_w[j + 768u];
+    rn_y[j] = x0 * inv * w0; rn_y[j + 256u] = x1 * inv * w1; rn_y[j + 512u] = x2 * inv * w2; rn_y[j + 768u] = x3 * inv * w3;
+  }
+  for (; j < rn_n; j += 256u) { rn_y[j] = rn_x[j] * inv * rn_w[j]; }
 }
 
 // --- rope: rotate pairs (i, i+half) in each head, at frame.pos ---
@@ -198,6 +210,39 @@ fn attn_softmax(@builtin(global_invocation_id) gid: vec3<u32>) {
   for (var t: u32 = 0u; t < frame.seqLen; t++) { sm_scores[off + t] /= sum; }
 }
 
+// --- attention softmax, one 256-thread workgroup per head, bit-identical to attn_softmax ---
+// The max (order-free) and the exponentials run in parallel; the sum is still one thread adding
+// the same values in the same order, but from workgroup memory instead of three serial passes
+// over global memory, which is what made the old kernel grow with the context. Needs seqLen <=
+// 2048 (the staging array); the engine falls back to attn_softmax above that.
+var<workgroup> smw_e: array<f32, 2048>;
+var<workgroup> smw_r: array<f32, 256>;
+@compute @workgroup_size(256)
+fn attn_softmax_wg(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let h = wg.x; let t0 = lid.x; let n = frame.seqLen;
+  if (h >= cfg.nH) { return; }
+  let off = h * cfg.maxSeq;
+  var m: f32 = -3.0e38;
+  for (var t: u32 = t0; t < n; t += 256u) { m = max(m, sm_scores[off + t]); }
+  smw_r[t0] = m;
+  workgroupBarrier();
+  for (var s: u32 = 128u; s > 0u; s >>= 1u) {
+    if (t0 < s) { smw_r[t0] = max(smw_r[t0], smw_r[t0 + s]); }
+    workgroupBarrier();
+  }
+  let mx = smw_r[0];
+  for (var t: u32 = t0; t < n; t += 256u) { smw_e[t] = exp(sm_scores[off + t] - mx); }
+  workgroupBarrier();
+  if (t0 == 0u) {
+    var sum: f32 = 0.0;
+    for (var t: u32 = 0u; t < n; t++) { sum += smw_e[t]; }
+    smw_r[0] = sum;
+  }
+  workgroupBarrier();
+  let sum = smw_r[0];
+  for (var t: u32 = t0; t < n; t += 256u) { sm_scores[off + t] = smw_e[t] / sum; }
+}
+
 // --- attention out: out[h*hd+i] = sum_t scores[h,t] * vCache[t, kvH*hd+i] ---
 @group(1) @binding(0) var<storage, read> ao_scores: array<f32>;
 @group(1) @binding(1) var<storage, read> ao_vc: array<f32>;
@@ -214,6 +259,79 @@ fn attn_out(@builtin(global_invocation_id) gid: vec3<u32>) {
     acc += ao_scores[h * cfg.maxSeq + t] * ao_vc[t * cfg.kvDim + kvH * cfg.headDim + i];
   }
   ao_out[idx] = acc;
+}
+
+// --- batched attention: every column of a verify / prefill pass in one dispatch per stage ---
+// Column c (gid.y / wg.y) attends to positions [0, frame.seqLen + c) (frame is column 0's, the
+// K/V of all columns are in the cache already) and has its own score rows at c * nH * maxSeq.
+// Per (column, head, position) the arithmetic is attn_scores / attn_softmax_wg / attn_out's, so
+// the result is bit-identical to running the columns one after another.
+struct AMC { n: u32, s0: u32, s1: u32, s2: u32 };
+@group(1) @binding(0) var<storage, read> asm_q: array<f32>;
+@group(1) @binding(1) var<storage, read> asm_kc: array<f32>;
+@group(1) @binding(2) var<storage, read_write> asm_scores: array<f32>;
+@group(1) @binding(3) var<uniform> asm_mc: AMC;          // s0 = q column stride
+@compute @workgroup_size(64)
+fn attn_scores_mc(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.y; let h = gid.z; let t = gid.x;   // x: position, y: column, z: head
+  let seqLen = frame.seqLen + col;
+  if (t >= seqLen || h >= cfg.nH) { return; }
+  let kvH = h / (cfg.nH / cfg.nKV);
+  let qOff = col * asm_mc.s0 + h * cfg.headDim;
+  let kOff = t * cfg.kvDim + kvH * cfg.headDim;
+  var acc: f32 = 0.0;
+  for (var i: u32 = 0u; i < cfg.headDim; i++) {
+    acc += asm_q[qOff + i] * asm_kc[kOff + i];
+  }
+  asm_scores[(col * cfg.nH + h) * cfg.maxSeq + t] = acc / sqrt(f32(cfg.headDim));
+}
+
+@group(1) @binding(0) var<storage, read_write> smm2_scores: array<f32>;
+@compute @workgroup_size(256)
+fn attn_softmax_wg_mc(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let h = wg.x; let t0 = lid.x; let n = frame.seqLen + wg.y;
+  if (h >= cfg.nH) { return; }
+  let off = (wg.y * cfg.nH + h) * cfg.maxSeq;
+  var m: f32 = -3.0e38;
+  for (var t: u32 = t0; t < n; t += 256u) { m = max(m, smm2_scores[off + t]); }
+  smw_r[t0] = m;
+  workgroupBarrier();
+  for (var s: u32 = 128u; s > 0u; s >>= 1u) {
+    if (t0 < s) { smw_r[t0] = max(smw_r[t0], smw_r[t0 + s]); }
+    workgroupBarrier();
+  }
+  let mx = smw_r[0];
+  for (var t: u32 = t0; t < n; t += 256u) { smw_e[t] = exp(smm2_scores[off + t] - mx); }
+  workgroupBarrier();
+  if (t0 == 0u) {
+    var sum: f32 = 0.0;
+    for (var t: u32 = 0u; t < n; t++) { sum += smw_e[t]; }
+    smw_r[0] = sum;
+  }
+  workgroupBarrier();
+  let sum = smw_r[0];
+  for (var t: u32 = t0; t < n; t += 256u) { smm2_scores[off + t] = smw_e[t] / sum; }
+}
+
+@group(1) @binding(0) var<storage, read> aom_scores: array<f32>;
+@group(1) @binding(1) var<storage, read> aom_vc: array<f32>;
+@group(1) @binding(2) var<storage, read_write> aom_out: array<f32>;
+@group(1) @binding(3) var<uniform> aom_mc: AMC;          // s0 = out column stride
+@compute @workgroup_size(64)
+fn attn_out_mc(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= cfg.qDim) { return; }
+  let col = gid.y;
+  let seqLen = frame.seqLen + col;
+  let h = idx / cfg.headDim;
+  let i = idx % cfg.headDim;
+  let kvH = h / (cfg.nH / cfg.nKV);
+  let so = (col * cfg.nH + h) * cfg.maxSeq;
+  var acc: f32 = 0.0;
+  for (var t: u32 = 0u; t < seqLen; t++) {
+    acc += aom_scores[so + t] * aom_vc[t * cfg.kvDim + kvH * cfg.headDim + i];
+  }
+  aom_out[col * aom_mc.s0 + idx] = acc;
 }
 
 // --- silu-gate: g = silu(g) * u ---
@@ -238,14 +356,3 @@ fn add_res(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 `;
-
-// ============ cooperative matvec family (generated) ============
-// One workgroup of WG threads computes ROWS output rows together (the shape
-// llama.cpp's WebGPU backend, web-llm's generated kernels and zero-tvm all
-// converge on for decode GEMV). Thread t = (block-lane bl = t/4) x (quarter
-// qt = t%4, an 8-element slice of a 32-element quant block): consecutive
-// threads read consecutive words of the same row (coalesced) and each
-// thread's activation slice is loaded once and reused across all ROWS rows.
-// Scalar accumulators only: a dynamically-indexed local array spills to
-// scratch memory and ran 3x slower. Reduction is a portable shared-memory
-// halving tree (no subgroups: absent from shipping Safari 26).

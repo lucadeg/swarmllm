@@ -1,6 +1,6 @@
 # Architecture
 
-SwarmLLM has two halves: an inference **engine** that runs a model (or a slice of one) on a device's GPU through WebGPU, and a **room runtime** that connects browsers over WebRTC and threads one generation through all of them.
+Pooled has three parts: an inference **engine** that runs a model (or a slice of one) on a device's GPU through WebGPU, a **room runtime** that connects browsers over WebRTC and threads one generation through all of them, and **Code mode** (`harness/`), a coding agent that runs on the room's model.
 
 ```
                  ┌──────────────────────── host browser ────────────────────────┐
@@ -23,11 +23,11 @@ Hosts that also hold layers (the usual case) run steps 2–3 for their own range
 
 ## Prefill
 
-The prompt is known upfront, so it is processed in batches: up to 8 tokens per GPU pass (column-batched kernels read each weight block once for all columns) and 16 tokens per network round. During prefill nothing runs the LM head; the pass only fills the KV caches and recurrent states. Causality inside a batch is preserved by strictly ordered column processing in the recurrent kernels and by appending K/V before attending.
+The prompt is known upfront, so it is processed in batches of up to 16 tokens per GPU pass and per network round. Column-batched kernels read each weight block once for all columns, and full 16-column passes go through the prefill GEMM (`engine/wgsl/gemm.js`, Q4_0 and Q8_0). Up to 6 prefill rounds are in flight around the chain. During prefill nothing runs the LM head; the pass only fills the KV caches and recurrent states. Causality inside a batch is preserved by strictly ordered column processing in the recurrent kernels and by appending K/V before attending.
 
 ## Speculative decoding
 
-Qwen 3.5/3.8 ship a `nextn` draft block. Given the trunk's last hidden state and the just-sampled token, it predicts the next token; chaining it predicts several. The host then verifies `1 + K` tokens in **one** batched trunk pass (up to 8 columns, one network lap in a room). Accepted drafts are those the trunk's own sampled token agrees with; the first mismatch ends acceptance, the trunk's token is used, and every recurrent state is restored from a snapshot taken between columns. Because the trunk always decides, the output stream is identical to plain decoding for any sampler. Draft depth (3/5/7) is chosen per room by measured tokens per second.
+Qwen 3.5/3.8 ship a `nextn` draft block. Given the trunk's last hidden state and the just-sampled token, it predicts the next token; chaining it predicts several. The host then verifies `1 + K` tokens in **one** batched trunk pass (up to 16 columns, one network lap in a room). Drafts come from the draft block or, when the answer repeats text already in the context, from prompt lookup (up to 15 at once). Accepted drafts are those the trunk's own sampled token agrees with; the first mismatch ends acceptance, the trunk's token is used, and the recurrent state is rolled back by replaying the accepted columns from the pre-verify state. Because the trunk always decides, the output stream is identical to plain decoding for any sampler. Draft depth (3/5/7) is chosen per room by measured tokens per second.
 
 ## Memory and caching
 
@@ -42,7 +42,7 @@ Measured with `benchmarks/bench_breakdown.js` (skips kernel families and re-time
 | all matvecs (weights streamed at ~183 GB/s; roofline 184) | 82 ms |
 | everything else (small kernels, encode, submit, readback) | ~30 ms |
 
-Decode is at the memory roofline on this GPU; speculation is what raises tokens per second. Prefill is bound by the batched matvec path and is the subject of the GEMM work in `benchmarks/bench_gemm.js`.
+Decode is at the memory roofline on this GPU; speculation is what raises tokens per second. Prefill now runs through the GEMM in `engine/wgsl/gemm.js` at 16 columns and is still the biggest gap to native (roadmap 02). The table above predates the GEMM, flash attention and the fused kernels.
 
 ## Files
 
@@ -51,4 +51,20 @@ Decode is at the memory roofline on this GPU; speculation is what raises tokens 
 - `engine/wgsl/`: `base.js` (shared kernels), `coop.js` (the cooperative-GEMV generator), `qwen35.js` (DeltaNet and attention glue).
 - `engine/gguf.js`: GGUF header/tensor parsing, tokenizer extraction, quantization/repacking, streaming upload. `engine/safetensors.js`: the SmolLM path.
 - `engine/tokenizer.js`, `sampling.js`, `quant.js`, `autotune.js`, `selftest.js`: what their names say.
-- `room.js` (+ `room/wire.js`, `markdown.js`, `sampling.js`, `models.js`): the room: signaling, WebRTC mesh, layer assignment, download orchestration, the generation loop. `p2p.html` holds its markup and styles.
+- `engine/wgsl/gemm.js` (prefill GEMM), `engine/wgsl/moe.js` (mixture-of-experts router and expert kernels).
+- `room.js`: the room: signaling, links, layer assignment, download orchestration, the generation loop. `p2p.html` holds its markup and styles and is served at `/room`.
+- `room/model-loader.js`: browser model headers, tensor prefetch/retry, converted-weight caching and engine construction, including the optional draft model. The room supplies its state, range transport and lazily imported engine constructors; GPU acquisition, progress/pacing, membership and recovery stay in `room.js`.
+- `room/`: `transport.js` (the hidden-state wire, `PROTOCOL`), `wire.js` (frame packing), `conversation.js` (the conversation and the exact tokens every device holds), `models.js` (the model list and context per model), `plan.js` (layer split and model ladder), `compute.js` (the compute screen), `lookup.js` (prompt-lookup drafts), `preflight.js` (can this browser hold layers), `qr.js`, `card.js` (the room card), `markdown.js`, `sampling.js`, `visibility.js`, and `code.js` / `code-ui.js` (the Code pane).
+- `index.html` + `site/`: the landing page.
+
+## Code mode (`harness/`)
+
+The host types a request; the room's model runs a small agent loop and edits a project in the browser.
+
+- `agent.js`: the tool loop, with approval for edits. `tools.js` and `constrain.js`: Qwen's tool-call formats, a streaming parser, and a constraint that keeps tool names to the declared ones while sampling.
+- `room-model.js`, `engine-model.js`, `model-common.js`: the agent's model, either the whole room or one local engine, with prefix reuse between steps.
+- `codetools.js`, `workspace.js`, `projects.js`, `diff.js`: list, read, search, edit and write files in a scratch project (browser storage) or a folder on disk.
+- `preview.js`, `preview-build.js`, `preview-frame.js`, `preview-relay.html`, `preview-sync.js`, `preview-tools.js`, `run-js.js`: serve the project on a virtual port (`:5173`) in a sandboxed frame, collect its console errors for the agent, and mirror it to peers.
+- `sessions.js`, `statecache.js`, `prefix.js`: several conversations on one engine, parked in GPU slots or on disk (OPFS), resumed bit-exactly. See [long-context-and-sessions.md](long-context-and-sessions.md).
+
+Design: [design/harness-app.md](design/harness-app.md).

@@ -1,0 +1,142 @@
+---
+title: Signaling servers
+eyebrow: Self-hosting
+description: Run your own PeerJS server so rooms don't depend on the public one, and point rooms at it with ?signal= or a server list.
+sidebar:
+  label: Signaling servers
+  order: 1
+---
+
+{/*
+  Sources (origin/main 40bb0fa):
+  - docs/self-host-signaling.md (whole page, near verbatim)
+  - room/signal.js: CLOUD_HOST "0.peerjs.com", DEFAULT_SERVERS ["cloud"], openPeer timeoutMs 8000 / lastTimeoutMs 20000,
+    reconnectDelay = min(30000, 2000 * 2^n), spec parsing in the header comment
+  - room.js signalingDown(): the "Can't reach the signaling server" join-screen text
+  - package.json devDependencies: "peer": "^1.0.2"; p2p.html loads peerjs@1.5.4 from cdn.jsdelivr.net
+  - PR #259 (signaling fallback, reconnect after a blip)
+  - tests: tests/unit/signal_test.js, tests/e2e/signal_fallback.mjs
+*/}
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+A signaling server only introduces a room's devices to each other. By default rooms use the public PeerJS cloud (`0.peerjs.com`), which is free and shared, so it can be slow, down or blocked. Run your own for reliable rooms, and to keep room codes and IP addresses off a third-party server.
+
+**Shortest path:** run `npx peer --port 9000 --path /` behind TLS, then open rooms with `?signal=signal.example.com`.
+
+## What signaling does
+
+The host registers the room code; a joiner asks for it, and the two swap WebRTC offers through the server. After that the links are direct (or through a [TURN relay](/docs/self-host/turn)). Prompts, answers and the model never touch it. A running room keeps going if signaling drops, but new devices can't join and a reloading host can't reclaim its room until it's back.
+
+## Run a PeerServer
+
+Any PeerJS server 1.x works. The repo already has one as a dev dependency (`peer`).
+
+<Tabs>
+  <TabItem label="npx">
+    ```sh
+    npx peer --port 9000 --path /
+    # listening on ws://<this machine>:9000
+    ```
+  </TabItem>
+  <TabItem label="Docker">
+    ```sh
+    docker run -p 9000:9000 -d peerjs/peerjs-server
+    ```
+
+    The image listens on port 9000 at path `/`. It is published for `linux/amd64` only, so on an ARM machine use `npx`.
+  </TabItem>
+</Tabs>
+
+### Put it behind TLS
+
+An https page can only open `wss://`, so the server needs TLS. Give it a certificate:
+
+```sh
+npx peer --port 9000 --path / --sslkey key.pem --sslcert cert.pem
+```
+
+Or run it behind a reverse proxy and pass `--proxied`. With Caddy:
+
+```text title="Caddyfile"
+signal.example.com {
+  reverse_proxy 127.0.0.1:9000
+}
+```
+
+```sh
+npx peer --port 9000 --path / --proxied
+```
+
+:::caution[Proxy settings]
+- Pass WebSocket upgrades through (Caddy does by default; nginx needs `proxy_http_version 1.1` and the `Upgrade` and `Connection` headers), and plain HTTPS `GET <path>peerjs/id` too.
+- If you restrict origins with `--cors`, include the room's origin.
+- Keep `--expire_timeout` near its 5 s default, so joiners move on quickly from a server without the room.
+:::
+
+### Check it
+
+```sh
+curl https://signal.example.com/peerjs/id
+```
+
+It should print a fresh id (a UUID). With a non-default `--key`, the path is `/<key>/id`.
+
+## Point rooms at your server
+
+<Tabs>
+  <TabItem label="One room (?signal=)">
+    Add `?signal=` to the room URL. The host and every joiner must use the same server, because a room registered on one server doesn't exist on another. The host's invite link and QR code carry the parameter for you.
+
+    ```text
+    https://pooled.run/room?signal=signal.example.com                  wss, port 443, path /
+    https://pooled.run/room?signal=wss://signal.example.com:8443/pooled
+    https://pooled.run/room?signal=signal.example.com,cloud             yours first, then the cloud
+    http://127.0.0.1:8080/room?signal=127.0.0.1:9000                    local dev: ws, since the page is http
+    ```
+
+    `?signal=` replaces every other setting: only the servers it names are tried, in order.
+  </TabItem>
+  <TabItem label="A whole deployment">
+    If you [deploy the site yourself](/docs/self-host/deploy), define an ordered list before `room.js` loads, for example in `p2p.html`:
+
+    ```html title="p2p.html"
+    <script>window.POOLED_SIGNAL_SERVERS = ["wss://signal.example.com", "cloud"];</script>
+    ```
+
+    Entries can also be objects: `{ host, port, path, secure, key }`. Use `key` if your server runs with a non-default `--key`. Without the list, rooms use `["cloud"]`.
+  </TabItem>
+</Tabs>
+
+### Accepted forms
+
+| Form | Example | Meaning |
+|---|---|---|
+| `cloud` | `cloud` | The public PeerJS server, `0.peerjs.com` |
+| `host` | `signal.example.com` | `wss` when the page is https (`ws` when http), port 443, path `/` |
+| `host:port` | `127.0.0.1:9000` | Same, on that port |
+| `host:port/path` | `signal.example.com:443/pooled` | Same, under that path |
+| URL | `wss://signal.example.com:8443/pooled` | `wss://`, `ws://`, `https://` or `http://` |
+
+Without a port, a bare host uses 443; a URL uses 443 for `wss://`/`https://` and 80 for `ws://`/`http://`.
+
+## How the fallback works
+
+You can list several servers (`room/signal.js`):
+
+- **The host** uses the first server that registers the room code. A server counts as down when it refuses, drops, fails TLS or doesn't answer within 8 s (20 s for the last one). "That code is already hosting a room" is an answer, not an outage, so it never falls back.
+- **A joiner** walks the same list, and tries the next server when one has no such room. An invite link goes straight to the host's server: it carries `?signal=` (and `dev=0`) whenever the host isn't on the first server.
+- **A host that reloads** tries its room's server first, because its guests are there.
+- **All servers down:** the join screen says so, running rooms are not affected, and you can retry.
+- **Drops during a room:** every device shows a note under the header and re-registers with backoff (2, 4, 8, 16 s, then every 30 s). Running rooms keep working; new devices can't join until it's back.
+
+Signaling is not part of the room protocol, so devices on different Pooled versions still meet on the same server.
+
+## Test it
+
+No GPU needed:
+
+```sh
+deno test --allow-read tests/unit/signal_test.js   # spec parsing, list order, fallback rules
+node tests/e2e/signal_fallback.mjs                 # the fallback end to end in headless Chromium
+```

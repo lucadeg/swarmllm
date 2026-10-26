@@ -1,0 +1,77 @@
+---
+title: Invite devices
+eyebrow: Getting started
+description: Add a phone, a second laptop or a friend's desktop to your room with a link, a QR code or the room code.
+sidebar:
+  label: Invite devices
+  order: 3
+---
+import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+{/*
+Sources (for the fact-checker):
+- p2p.html: header Invite button and room code badge, #share sheet ("Invite a device", QR, Copy link, Share…), side panel "Invite more devices", join screen ("Have a code?", Join, "Chat only, no memory to give")
+- room.js: roomLink() (pooled.run/r/<code>, #k=<key> on the host), inLobby() ("Waiting for the host to let you in"), requestLine() ("otter wants to join (Mac, 8 GB)")
+- room/joingate.js: CODE_LEN = 6, formatCode "4TK-G9P", parseCode (4 or 6, dash optional), invite key #k=, DENIED_TEXT; p2p.html #join-reqs (Allow, Deny); Room settings → Joining → "Ask before new devices join" (on by default)
+- room/plan.js codeFromLocation() (alphabet without I, L, O, U, 0, 1)
+- room/errors.js joinStep() messages
+*/}
+
+Every device you add brings more memory, so the room can run a bigger model.
+
+<Steps>
+
+1. **In the room, press Invite** in the header.
+
+   The **Invite a device** sheet shows a QR code, the room code (like `4TK-G9P`) and a **Copy link** button.
+
+2. **Open it on the other device.**
+
+   <Tabs>
+     <TabItem label="Link or QR">
+       Open the link, or scan the QR code with the phone's camera. The device joins by itself.
+     </TabItem>
+     <TabItem label="Room code">
+       Open [pooled.run/room](https://pooled.run/room), type the code under **Have a code?** and press **Join**. The dash is optional. The device then waits for you to let it in.
+     </TabItem>
+   </Tabs>
+
+3. **Let it in, if asked.**
+
+   A device that typed the code shows up as a prompt like `otter wants to join (Mac, 8 GB)`. Press **Allow** or **Deny**.
+
+</Steps>
+
+The new device's memory is added to the room. Check the header for how many GB the room pools, then [pick a model](/docs/models).
+
+## Who gets in
+
+- **Your invite link or QR code** lets a device in at once. It carries a key that only the room's creator shares.
+- **The code alone** needs your OK. Denied devices see `The host didn't let this device in.`
+- A device you let in comes back after a reload without asking again.
+- Your prompt shows a six-digit code, and so does the joining device's waiting screen. If they match, nobody sits between the two devices. See [Security model](/docs/internals/security#who-is-on-a-link).
+
+To let anyone with the code in, turn off **Room settings → Joining → Ask before new devices join**.
+
+## Set how much a device gives
+
+Each device sets its share under **Memory** on the join screen, or **This device gives** in the room. Phones can give only a little. See [Phones and tablets](/docs/phones).
+
+A device without WebGPU joins as **Chat only, no memory to give**. It can still ask and read answers.
+
+## If a device can't join
+
+| Message | What to do |
+|---|---|
+| `Still connecting…` | Wait a few more seconds. |
+| `No room with that code.` | Check the code, and that the room's creator still has the page open. |
+| `Found the room, but these two devices can't reach each other` | Put both devices on the same Wi-Fi or try another network. See [Networks and work Wi-Fi](/docs/rooms/networks). |
+
+More in [Troubleshooting](/docs/troubleshooting#joining-a-room).
+
+## Details
+
+- Room codes never use I, L, O, U, 0 or 1, so they are hard to misread. Rooms opened before six-character codes keep their four.
+- The invite link looks like `https://pooled.run/r/4TKG9P#k=…`. The part after `#` never goes to a server. A link copied on another device in the room has no key, so it gets the same prompt as the code.
+- Not every device gets layers. By default the fastest devices run the model and the rest join to ask. See [How layers are split](/docs/rooms/split).
+- If a device that holds layers leaves, the room deals its layers out to the others. See [Device drops and recovery](/docs/rooms/recovery).

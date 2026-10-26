@@ -1,21 +1,12 @@
-// FULL Qwen3.8-27B on the SwarmLLM engine: 64 layers + head, greedy generation.
-import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
+// FULL Qwen3.8-27B on the Pooled engine: 64 layers + head, greedy generation.
+import { qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
+import { openGGUF, Q38_PATH } from "./load_model.js";
 import { makeTokenizer, argmax } from "../engine/engine.js";
 import { Qwen35Engine } from "../engine/qwen35.js";
 
-const dir = new URL(".", import.meta.url).pathname;
-const file = await Deno.open(dir + "../models/q38/model.gguf", { read: true });
-const headBuf = new Uint8Array(16 * 1024 * 1024);
-let got = 0;
-while (got < headBuf.length) { const n = await file.read(headBuf.subarray(got)); if (n === null) break; got += n; }
-const G = parseGGUFHeader(headBuf.buffer);
-const bytesOf = async (info) => {
-  const out = new Uint8Array(info.byteLength);
-  await file.seek(info.byteOffset, Deno.SeekMode.Start);
-  let o = 0;
-  while (o < out.length) { const n = await file.read(out.subarray(o)); if (n === null) break; o += n; }
-  return out;
-};
+// converted-weights cache: tests/weight_cache.js (WEIGHT_CACHE=0 disables)
+const model = openGGUF(Q38_PATH);
+const G = model.G, bytesOf = model.bytesOf;
 
 const adapter = await navigator.gpu.requestAdapter();
 const device = await adapter.requestDevice({
@@ -61,3 +52,4 @@ console.log("engine :", JSON.stringify(text));
 console.log("llama.cpp:", JSON.stringify(GOLDEN));
 console.log("speed:", (12 / secs).toFixed(2), "tok/s");
 console.log(text === GOLDEN ? "\nQWEN3.8-27B FULL PASS ✓✓✓" : "\nQWEN3.8 MISMATCH");
+Deno.exit(text === GOLDEN ? 0 : 1);

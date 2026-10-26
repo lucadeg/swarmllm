@@ -1,0 +1,43 @@
+{
+  "name": "@pooled/cli",
+  "version": "2.0.1",
+  "description": "Use a Pooled room from the command line: pooled serve <ROOM CODE> (a local OpenAI and Anthropic compatible endpoint), pooled chat <ROOM CODE> (talk to its model), pooled join <ROOM CODE> and pooled host (lend this computer's GPU).",
+  "homepage": "https://pooled.run",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nehanth/pooled.git",
+    "directory": "cli"
+  },
+  "license": "MIT",
+  "author": "Nehanth Narendrula",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild room-node=../packages/room-node/index.js convert_worker=../packages/room-node/convert_worker.js expert_disk_worker=../packages/room-node/expert_disk_worker.js chanauth=../room/chanauth.js --bundle --platform=node --format=esm --target=node22 --external:webgpu --external:@pooled/dawn-* --external:node-datachannel --external:peerjs --log-level=warning --outdir=dist",
+    "prepack": "npm run build",
+    "test": "node --test test/*_test.mjs"
+  },
+  "bin": {
+    "pooled": "bin/pooled.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "dist/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "node-datachannel": "0.33.4",
+    "peerjs": "1.5.4"
+  },
+  "optionalDependencies": {
+    "webgpu": "0.6.1"
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.60.0",
+    "esbuild": "0.25.10",
+    "openai": "^5.0.0"
+  }
+}

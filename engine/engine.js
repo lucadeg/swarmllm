@@ -1,4 +1,4 @@
-// SwarmLLM engine: public entry point. The implementation lives in focused
+// Pooled engine: public entry point. The implementation lives in focused
 // modules; this file re-exports them so `import { ... } from "./engine.js"`
 // keeps working for the room page, tests and benchmarks. See docs/kernels.md.
 export { WGSL } from "./wgsl/base.js";

@@ -1,6 +1,6 @@
 # Code of Conduct
 
-SwarmLLM follows the [Contributor Covenant](https://www.contributor-covenant.org/version/2/1/code_of_conduct/), version 2.1.
+Pooled follows the [Contributor Covenant](https://www.contributor-covenant.org/version/2/1/code_of_conduct/), version 2.1.
 
 ## Our pledge
 

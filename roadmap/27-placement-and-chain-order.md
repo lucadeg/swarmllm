@@ -1,6 +1,6 @@
 # 27 · Placement, chain order and host election
 
-**Phase:** next · **Status:** planned · _P2 · design: [docs/research/network-scheduler.md](../docs/research/network-scheduler.md) §5_
+**Phase:** multi-device · **Status:** speed-aware placement landed · open: chain order and host election · takes over #35; handing the room to another device when the host leaves is #58 · _P2 · design: [docs/archive/research/network-scheduler.md](../docs/archive/research/network-scheduler.md) §5_
 
 ## Why
 

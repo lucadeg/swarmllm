@@ -151,7 +151,7 @@ Files: harness `scratch/verify_delta_tile.js`; target `engine/qwen35.js` (kernel
 
 ---
 
-# Spec: Chunkwise-parallel Gated DeltaNet prefill (C = 4..16 tokens per pass) for the SwarmLLM WebGPU engine
+# Spec: Chunkwise-parallel Gated DeltaNet prefill (C = 4..16 tokens per pass) for the Pooled WebGPU engine (then called SwarmLLM)
 
 Scope: replaces the token loop of `dn_delta_mc` (engine/qwen35.js:294-333, 48 WGs x 128 threads, S in a read_write storage buffer) with a single-dispatch chunk kernel. Everything else in the DeltaNet block (conv, L2 norm, beta/decay, gated RMSNorm) is per-token and stays. Only verified findings are used; items not established by measurement or source are marked UNCERTAIN.
 

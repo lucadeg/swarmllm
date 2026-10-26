@@ -1,6 +1,6 @@
 # 24 · Close the Mac gap
 
-**Phase:** now · **Status:** planned · _P1 · design: [docs/research/mac-metal-plan.md](../docs/research/mac-metal-plan.md)_
+**Phase:** speed · **Status:** planned · _P1 · design: [docs/archive/research/mac-metal-plan.md](../docs/archive/research/mac-metal-plan.md)_
 
 ## Why
 

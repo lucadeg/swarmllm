@@ -42,3 +42,4 @@ for (let i = 0; i < golden.generated.length; i++) { const n = argmax(logits); ge
 console.log("generated:", JSON.stringify(tok.decode(gen)));
 console.log("golden   :", JSON.stringify(tok.decode(golden.generated)));
 console.log(JSON.stringify(gen) === JSON.stringify(golden.generated) ? "QWEN SPLIT PASS" : "QWEN SPLIT FAIL");
+Deno.exit(JSON.stringify(gen) === JSON.stringify(golden.generated) ? 0 : 1);

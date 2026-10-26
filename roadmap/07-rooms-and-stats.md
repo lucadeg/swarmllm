@@ -1,6 +1,6 @@
 # 07 · Persistent rooms and contribution stats
 
-**Phase:** next · **Status:** planned
+**Phase:** later · **Status:** planned
 
 ## Why
 A room today is a session you lose. Persistent room links that remember the model and layer assignment make rejoining instant (weights are cached), and per-device stats ("your Mac served 4,812 tokens") are the retention mechanic volunteer computing has relied on for twenty years, with no backend needed.

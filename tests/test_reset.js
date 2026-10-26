@@ -18,3 +18,4 @@ await run("Completely different text to pollute the state, and more of it.");
 eng.reset();
 const b = await run("The capital of France is");
 console.log(a === b ? "RESET PASS ✓" : "RESET FAIL\n" + a + "\n" + b);
+Deno.exit(a === b ? 0 : 1);

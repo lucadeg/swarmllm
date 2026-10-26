@@ -1,0 +1,104 @@
+---
+title: FAQ
+eyebrow: Help
+description: Short answers to the questions people ask before and during their first room.
+tableOfContents:
+  maxHeadingLevel: 2
+sidebar:
+  label: FAQ
+  order: 2
+---
+
+{/*
+Sources (origin/main):
+- README.md: intro, models, Browsers, Privacy, Performance, "Use Pooled from your tools"
+- SECURITY.md: threat model, weights shared in the room, ?peerweights=0
+- room/models.js: NEED_GB (4.0 / 17.0 / 22.5), CTX
+- room/pledge.js: iPhone/iPad 0.5 GB default, 1 GB max; Android by navigator.deviceMemory; computers up to 64 GB
+- room/plan.js: For speed default, PHONE_COST 20
+- room/ice.js: STUN servers; api/turn.mjs (site relay)
+- room.js: ask-only guests without WebGPU, per-model delete in Room settings, re-deal after 60 s
+- GOVERNANCE.md: no accounts, tokens or ads
+*/}
+
+## Basics
+
+### What is Pooled?
+
+Pooled runs one open model across the devices in a room, each in a browser tab on its own GPU. Together they run a model none of them could run alone. See [What is Pooled](/docs).
+
+### Do I need to install anything or make an account?
+
+No. Every device opens a link. There is no account and no API key. To use a room from your own tools, you run `npx @pooled/cli serve`. See [Serve API](/docs/serve).
+
+### Does it cost anything?
+
+No. Pooled is MIT-licensed, with no paid tier and no ads. The weights come free from Hugging Face.
+
+### Is there a server doing the work?
+
+No. The model runs on your devices. pooled.run serves static files, and a signaling server only introduces the devices. After that, they talk to each other directly, encrypted. None of these servers sees your messages.
+
+## Devices and browsers
+
+### Do I need a GPU?
+
+A device that runs part of the model needs WebGPU, which any recent laptop, desktop or phone has in a current browser. A device without it can still join to ask questions. The computer that runs `pooled serve` needs no GPU.
+
+### Which browser should I use?
+
+Chrome or Edge on a laptop or desktop. Safari 26 works too, but don't host the 27B from Safari on a Mac. See [Browsers and requirements](/docs/browsers).
+
+### Why does my phone only get to ask questions?
+
+On purpose. A phone's GPU is much slower than a computer's, so the room gives phones layers only when the computers can't hold the model. The room is faster that way. See [Phones and tablets](/docs/phones).
+
+### How much memory can a phone lend?
+
+An iPhone or iPad gives at most 1 GB. An Android phone gives at most 0.5 to 2 GB, depending on its memory. The limit is the browser tab, not the GPU. A computer can give up to 64 GB. The one exception is Qwen3.8-Flash-Next (an experimental model): for it, a computer lending from the terminal (`pooled host` / `pooled join`) may give up to 128 GB, so a single big unified-memory machine can hold it. A browser tab still gives at most 64 GB.
+
+### Does the screen have to stay on?
+
+Yes, on every device that holds layers. Pooled asks the browser to keep it on. If it can't, set Auto-Lock to **Never** on an iPhone, or the longest screen timeout on Android.
+
+## Models and speed
+
+### Which model should I pick?
+
+The biggest one the room has memory for: Qwen3 1.7B at 4 GB (8K context; 5.6 GB for 16K), Qwen3.8 27B at 17 GB, Qwen3.6 35B MoE at 22.5 GB. The picker preselects it. A bigger MoE model is newer: Qwen3.8-Flash-Next (125B, experimental), a picker row of its own that needs about 8 GB of GPU memory on one tab that keeps its experts on disk (it asks first). The MoE is also the fastest of the big two. See [Pick a model](/docs/models).
+
+### Why is it slower than running the model natively?
+
+The browser's GPU API costs some speed, and every device the answer passes through adds its network delay. Reading a long prompt is the biggest gap. See [Benchmarks](/docs/internals/benchmarks).
+
+### Do more devices make it faster?
+
+No. More devices give you more memory, so you can run a bigger model. A model that fits on one device runs fastest there. With the default **For speed** split, devices the model doesn't need join to ask.
+
+### Is the answer the same as on one device?
+
+Yes. With **Exact** wording, a room gives the same words as one device running the whole model. Tests check this.
+
+## Privacy
+
+### Who can see my prompts?
+
+Everyone in the room, on purpose. The host can limit whose screen shows the chat, but the devices running layers could still recover your text. Assume anyone in the room can read your prompts. See [Privacy](/docs/privacy).
+
+### Can someone in the room tamper with the answers?
+
+Yes. Nothing checks another device's work yet. Only run rooms with people you trust. See [Privacy](/docs/privacy#what-pooled-cannot-promise).
+
+### What do I send when I use `pooled serve` with a coding agent?
+
+Everything the tool sends, including the files it reads. It all goes to the room. Point coding tools only at a room you trust.
+
+## Storage
+
+### Where do the weights go, and how do I delete them?
+
+Each browser caches the layers it downloaded, so the next start is faster. To free space, open **Room settings** (the sliders icon). It lists each cached model with a **Delete** button, and **Clear cached weights** removes them all.
+
+### What happens if someone leaves mid-answer?
+
+The room waits for them. If they aren't back within a minute, the host deals their layers to the devices still there, and the answer carries on. See [Device drops and recovery](/docs/rooms/recovery).

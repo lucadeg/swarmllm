@@ -1,0 +1,400 @@
+// Qwen35Engine: the hybrid Gated-DeltaNet + attention engine (Qwen 3.5/3.6/3.8),
+// with batched prefill/verify paths and multi-token-prediction speculation.
+// See docs/architecture.md. Layer-shardable like DenseEngine. Golden
+// reference: tests/reference/ref_q38.mjs (validated line by line against
+// llama.cpp eval-callback dumps).
+import { WGSL } from "./wgsl/base.js";
+import { gemmWGSL, GEMM_S, GEMM_TILE } from "./wgsl/gemm.js";
+import { gemmSgmWGSL, pickSgmConfig, sgmPlan, SGM_FEATURES, SGM_FEATURES_OPT, SGM_SYNTAX, SGM_DEFAULT } from "./wgsl/gemm_sgm.js";
+import { gemmWideWGSL, wideTileConfig } from "./wgsl/gemm_wide.js";
+import { coopWGSL, probeUnpack } from "./wgsl/coop.js";
+import { WGSL2 } from "./wgsl/qwen35.js";
+import { moeWGSL, moeFusedWGSL, moeKernelConfig } from "./wgsl/moe.js";
+import { attnTileWGSL, attnTileConfig } from "./wgsl/attn_tile.js";
+import { moeGroupWGSL, moeGroupSizes, dnGroupRows, tiledGroupWGSL, tileRows } from "./wgsl/moe_group.js";
+import { f16ToF32, f32ToF16 } from "./gguf.js";
+
+
+// Prefill GEMM operand precision (docs/research/prefill-f16-subgroup.md):
+//   "f32"      default: the row-stationary f32 GEMM (engine/wgsl/gemm.js), the pinned numerics
+//   "f16"      same kernels, weights and activations rounded to f16 on the way in (ALU, any device)
+//   "sgmatrix" tensor cores via Chrome's chromium-experimental-subgroup-matrix (engine/wgsl/gemm_sgm.js),
+//              f16 operands, f32 accumulation; feature-probed and self-tested, else the f32 GEMM
+// Only full-width prefill passes use a GEMM, so decode and verify never change. Both opt-in modes
+// change prefill logits (off by default). Deno tests: PREFILL_MATH=f16|sgmatrix (needs --allow-env).
+export const PREFILL_MATH = ["f32", "f16", "sgmatrix"];
+function envPrefillMath() {
+  try {
+    const D = globalThis.Deno;
+    if (!D?.env || D.permissions?.querySync?.({ name: "env", variable: "PREFILL_MATH" })?.state !== "granted") return undefined;
+    return D.env.get("PREFILL_MATH") || undefined;
+  } catch { return undefined; }
+}
+// Features to request on the device for a prefillMath mode (only those the adapter has).
+export function prefillMathFeatures(adapter, mode = envPrefillMath()) {
+  if (mode !== "sgmatrix" || !adapter?.features) return [];
+  return [...SGM_FEATURES, ...SGM_FEATURES_OPT].filter((f) => adapter.features.has(f));
+}
+
+// MoE prefill ubatch (tokens) for the default expert-grouped + wide prefill (moeGroupPrefill, prefillUbatch)
+export const MOE_PREFILL_UBATCH = 256;
+
+export class Qwen35Engine {
+  // Option defaults applied under every create() call's own options (test runners set these from the
+  // environment for A/B runs, e.g. tests/load_model.js ATTN_PREFILL_TILE=1).
+  static defaults = {};
+  static async create(opts) {
+    const e = new Qwen35Engine();
+    await e._init({ ...Qwen35Engine.defaults, ...opts });
+    return e;
+  }
+
+  // ---- session state (prefix cache, session switching, SSD cache) ----
+  // Everything this device holds about the tokens written so far: per layer the KV rows [0, pos)
+  // (full attention) or the recurrent state and conv window (DeltaNet), the draft block's KV, and
+  // this.x, the trunk hidden the next draft starts from. Restoring it and feeding the next token
+  // is exactly the same as never having left (tests/e2e/state_synth.mjs). A device only holds its
+  // own layers, so in a room every device saves and restores its own part under the same key.
+  _stateParts(pos = this.pos) {
+    const kvRow = this.dims.kvDim * (this.kvQ8 ? 1 : this.flash ? 2 : 4), scRow = this.dims.kvDim / 32 * 4;
+    const parts = [];
+    for (const L of this.mtpLayer ? [...this.layers, this.mtpLayer] : this.layers) {
+      if (L.isFull) {
+        parts.push({ buf: L.kCache, bytes: pos * kvRow }, { buf: L.vCache, bytes: pos * kvRow });
+        if (this.kvQ8) parts.push({ buf: L.kScale, bytes: pos * scRow }, { buf: L.vScale, bytes: pos * scRow });
+      }
+      else parts.push({ buf: L.S, bytes: L.S.size }, { buf: L.convState, bytes: L.convState.size });
+    }
+    parts.push({ buf: this.x, bytes: this.dims.dim * 4 });
+    return parts;
+  }
+  // What a saved state must match to be loaded here.
+  stateSignature() {
+    // pm only when prefill ran with f16 operands, so f32-made states keep their old signature
+    return { v: 1, lo: this.lo, hi: this.hi, mtp: !!this.mtpLayer, flash: !!this.flash, kvQ8: !!this.kvQ8, dims: [this.dims.dim, this.dims.kvDim, this.dims.nVH, this.dims.convDim],
+      // wide prefill sums projections in another order: its states are not interchangeable with the default's
+      ...(this.ubatch && this.prefillWide !== false ? { ub: this.ubatch } : {}),
+      ...(this.prefillMath && this.prefillMath !== "f32" && this._pmAvail?.[this.prefillMath] ? { pm: this.prefillMath } : {}) };
+  }
+  // Read the state back to the CPU: { sig, pos, parts: [ArrayBuffer] }. One part at a time through
+  // one staging buffer, so a long context never needs one giant mapping.
+  async exportState() { return this._readParts(this._stateParts(), this.pos); }
+  // A GPU slot read back the same way (for spilling a session to disk without switching to it).
+  async exportSlot(name) {
+    const sl = this.slots?.get(name);
+    if (!sl) throw new Error("no saved slot " + name);
+    return this._readParts(this._stateParts(sl.pos).map((p, i) => ({ buf: sl.bufs[i], bytes: p.bytes })), sl.pos);
+  }
+  async _readParts(parts, pos) {
+    const most = Math.max(4, ...parts.map((p) => p.bytes));
+    const stage = this.device.createBuffer({ size: most, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    const out = [];
+    try {
+      for (const p of parts) {
+        if (!p.bytes) { out.push(new ArrayBuffer(0)); continue; }
+        const enc = this.device.createCommandEncoder();
+        enc.copyBufferToBuffer(p.buf, 0, stage, 0, p.bytes);
+        this.device.queue.submit([enc.finish()]);
+        await stage.mapAsync(GPUMapMode.READ, 0, p.bytes);
+        out.push(stage.getMappedRange(0, p.bytes).slice(0));
+        stage.unmap();
+      }
+    } finally { stage.destroy(); }
+    return { sig: this.stateSignature(), pos, parts: out };
+  }
+  // Load a state from exportState (same model, same layers, same KV format).
+  importState(st) {
+    const sig = JSON.stringify(this.stateSignature());
+    if (JSON.stringify(st.sig) !== sig) throw new Error("saved state is for a different model, layer range or KV format");
+    const parts = this._stateParts(st.pos);
+    if (parts.length !== st.parts.length || parts.some((p, i) => p.bytes !== st.parts[i].byteLength)) throw new Error("saved state has the wrong shape");
+    parts.forEach((p, i) => { if (p.bytes) this.device.queue.writeBuffer(p.buf, 0, st.parts[i]); });
+    this.pos = st.pos;
+    this._pre = null;
+  }
+  // GPU-side checkpoints: copies on the GPU (no readback), for switching between sessions or
+  // rewinding an agent to an earlier turn. Costs GPU memory: the DeltaNet states (~3 MB per
+  // layer on the 27B) plus the KV rows so far.
+  saveSlot(name) {
+    this.dropSlot(name);
+    const parts = this._stateParts();
+    const enc = this.device.createCommandEncoder();
+    const bufs = parts.map((p) => {
+      const b = this.device.createBuffer({ size: Math.max(4, p.bytes), usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+      if (p.bytes) enc.copyBufferToBuffer(p.buf, 0, b, 0, p.bytes);
+      return b;
+    });
+    this.device.queue.submit([enc.finish()]);
+    (this.slots = this.slots || new Map()).set(name, { pos: this.pos, bufs });
+  }
+  loadSlot(name) {
+    const sl = this.slots?.get(name);
+    if (!sl) throw new Error("no saved slot " + name);
+    const parts = this._stateParts(sl.pos);
+    const enc = this.device.createCommandEncoder();
+    parts.forEach((p, i) => { if (p.bytes) enc.copyBufferToBuffer(sl.bufs[i], 0, p.buf, 0, p.bytes); });
+    this.device.queue.submit([enc.finish()]);
+    this.pos = sl.pos;
+    this._pre = null;
+  }
+  dropSlot(name) {
+    const sl = this.slots?.get(name);
+    if (sl) { for (const b of sl.bufs) b.destroy(); this.slots.delete(name); }
+  }
+  dropAllSlots() { for (const k of [...(this.slots?.keys() || [])]) this.dropSlot(k); }
+
+  // Fresh context: forget the conversation so far. Recurrent (DeltaNet) states and
+  // conv windows are zeroed; the KV caches are simply overwritten from position 0.
+  reset() {
+    const enc = this.device.createCommandEncoder();
+    for (const R of this.layers) {
+      if (R.convState) enc.clearBuffer(R.convState);
+      if (R.S) enc.clearBuffer(R.S);
+    }
+    this.device.queue.submit([enc.finish()]);
+    this.pos = 0;
+    this._pre = null;
+  }
+
+  // opts: { device, meta (gguf meta), weights, layerRange, hasEmbed, hasHead, maxSeq }
+  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, attnPrefillTile, attnPrefillSplits = 32, attnPrefillTK = 0, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true, moeGroupPrefill, moeGroupUC = 8, moeGroupTiled = true, prefillUbatch, prefillTile, prefillMath, prefillSgm, adapterInfo, headRows = 0 }) {
+    this.replay = replayRollback !== false;
+    // longest draft run one verify can take: with replay rollback the limit is the replay buffers
+    // (max(batchCols, 8) columns), so prompt-lookup drafts can run to 15 tokens when code is being copied
+    this.maxDrafts = this.replay ? Math.min(15, Math.max(batchCols, 8) - 1) : 7;
+    this.device = device;
+    this.mvVariant = matvecVariant;
+    this.coopWG = coopWG; this.coopRows = coopRows;
+    this.NC = batchCols; this.coopRowsB = coopRowsB;   // batched (prefill/verify) column count, rows per WG
+    const M = meta;
+    const dim = M["qwen35.embedding_length"];
+    const nH = M["qwen35.attention.head_count"];
+    const nKV = M["qwen35.attention.head_count_kv"];
+    const hd = M["qwen35.attention.key_length"];
+    const nRot = M["qwen35.rope.dimension_count"];
+    const ropeTheta = M["qwen35.rope.freq_base"];
+    const eps = M["qwen35.attention.layer_norm_rms_epsilon"];
+    // Mixture of experts (Qwen3.5 / 3.6 MoE): K of nExp routed experts per token plus a shared
+    // expert. The dense FFN buffers (g, u, cfg.inter) serve the shared expert.
+    const nExp = M["qwen35.expert_count"] || 0;
+    this.moe = nExp > 0 ? { nExp, K: M["qwen35.expert_used_count"], inter: M["qwen35.expert_feed_forward_length"],
+      shInter: M["qwen35.expert_shared_feed_forward_length"] || 0, norm: M["qwen35.expert_weights_norm"] === false ? 0 : 1 } : null;
+    if (this.moe && (nExp > 1024 || !(this.moe.K > 0) || this.moe.K > 16)) throw new Error(`unsupported MoE shape: ${nExp} experts, top-${this.moe.K}`);
+    const inter = this.moe ? (this.moe.shInter || this.moe.inter) : M["qwen35.feed_forward_length"];
+    // Fused MoE FFN (engine/wgsl/moe.js moeFusedWGSL): router GEMV with the shared-expert gate as row
+    // nExp, moe_route, gate/up over K + 1 slots (the shared expert is slot K), down + combine + residual
+    // in one launch: 5 dispatches per MoE layer instead of 9. Needs a shared expert, an F32 router and
+    // shared gate, Q4_0 / Q8_0 shared weights we can repack, on every MoE layer; otherwise (or with
+    // moeFuse: false) the unfused kernels run. moeDnRows: output rows per moe_dnc workgroup (1, 2, 4).
+    this.moeFuse = false;
+    if (this.moe && moeFuse !== false) {
+      const { nExp: nE, inter: ei } = this.moe;
+      const q = (e) => !!e && (e.kind === "q4" || e.kind === "q8");
+      const COPY = GPUBufferUsage.COPY_SRC;
+      // packGU needs 4-byte aligned parts (CPU copies: an odd Q4/Q8 block count falls back to unfused)
+      const packable = (e) => q(e) && (e.gpu ? !!(e.gpu.qs?.usage & COPY) && !!(e.gpu.sc?.usage & COPY)
+        : !!(e.qs && e.scales) && e.qs.byteLength % 4 === 0 && e.scales.byteLength % 4 === 0);
+      const f32 = (e, n) => !!e && e.kind === "f32" && !!e.data && e.data.length === n;
+      const moeLs = [...weights.layers, ...(weights.mtp && hasHead ? [weights.mtp.layer] : [])].filter((L) => L.moe);
+      const ok = (L) => f32(L.router, nE * M["qwen35.embedding_length"]) && f32(L.shRouter, M["qwen35.embedding_length"])
+        && q(L.expGate) && q(L.expDown) && L.shGate && L.shUp && L.shGate.kind === L.shUp.kind && packable(L.shGate) && packable(L.shUp) && q(L.shDown);
+      // moe_dnc keeps (K + 1) * R * 64 f32 partial sums in workgroup memory
+      const wgMemOK = (this.moe.K + 1) * moeDnRows * 64 * 4 <= device.limits.maxComputeWorkgroupStorageSize;
+      if (moeLs.length && moeLs.every(ok) && inter % 32 === 0 && [1, 2, 4].includes(moeDnRows) && wgMemOK) {
+        this.moeFuse = true;
+        this.moe.KS = this.moe.K + 1; this.moe.sDim = inter; this.moe.hs = Math.max(ei, inter); this.moe.R = moeDnRows;
+        this.moe.guPairs = [...new Set(moeLs.map((L) => L.expGate.kind + "_" + L.shGate.kind))];
+        this.moe.dnPairs = [...new Set(moeLs.map((L) => L.expDown.kind + "_" + L.shDown.kind))];
+      } else console.warn(`MoE: fused FFN off (unfused kernels): ${!moeLs.length ? "no MoE layers" : ![1, 2, 4].includes(moeDnRows) ? `moeDnRows ${moeDnRows} not 1, 2 or 4`
+        : !wgMemOK ? "moe_dnc workgroup memory over the device limit" : "a layer's router / shared-expert tensors are not fusable"}`);
+    }
+    // expert GEMV layout (engine/wgsl/moe.js): moeKernel = undefined (MOE_LEGACY) | "default" (the GB10-tuned MOE_DEFAULT) | "legacy" | { gu: {...}, dn: {...} }.
+    // Every (column, slot) runs the same code in every pass width, so any setting keeps batched == one-token.
+    this.moeK = this.moe ? moeKernelConfig(moeKernel, { dim, inter: this.moe.inter }) : null;
+    // (only the unfused moe_gu / moe_dn kernels use it: with moeFuse the fused moe_gus / moe_dnc run instead)
+    const dState = M["qwen35.ssm.state_size"];
+    const nKH = M["qwen35.ssm.group_count"];
+    const nVH = M["qwen35.ssm.time_step_rank"];
+    const dInner = M["qwen35.ssm.inner_size"];
+    if (dState !== 128) throw new Error(`dn_delta_mc keeps a 128-row state column in registers; this model has dState ${dState}`);
+    const keyDim = dState * nKH;
+    const convDim = keyDim * 2 + dInner;
+    // workers parse the header without the vocab; the embedding's row count says the same thing
+    const vocab = M["tokenizer.ggml.tokens"]?.length ?? vocabOpt ?? M["qwen35.vocab_size"] ?? 248320;
+    const qDim = nH * hd, kvDim = nKV * hd;
+    this.dims = { dim, nH, nKV, hd, nRot, inter, dState, nKH, nVH, dInner, keyDim, convDim, vocab, qDim, kvDim };
+    this.maxSeq = maxSeq;
+    // workgroup softmax (bit-identical, see engine/wgsl/base.js); its staging array holds 2048 positions
+    this.softmaxWG = softmaxWG !== false && maxSeq <= 2048;
+    // long context: f16 KV cache + split-K flash attention (engine/wgsl/qwen35.js attn_flash), used
+    // by every pass so decode, verify and prefill agree bit for bit. attnFlash: false keeps the f32
+    // cache and the scores / softmax / out kernels (A/B, and the pre-flash numerics).
+    this.flash = attnFlash !== false && hd <= 256 && nH % nKV === 0 && nH / nKV <= 8 && nH / nKV * hd <= 2048;
+    this.faSplit = Math.max(256, Math.ceil(maxSeq / 128 / 64) * 64);   // <= 128 splits per head
+    this.faSplits = Math.ceil(maxSeq / this.faSplit);
+    // kvQ8: int8 K/V with one scale per 32 values (~56% of f16's memory: 36 KB per token for the
+    // whole 27B), for 32K+ contexts. Off by default: it changes the numerics (tests/e2e/flash_synth.mjs --q8).
+    this.kvQ8 = this.flash && kvQ8 === true && hd % 32 === 0;
+    this.ksPipe = this.kvQ8 ? "kv_store_q8" : "kv_store";
+    this.faPipe = this.kvQ8 ? "attn_flash_q8" : "attn_flash";
+    // two columns per workgroup in batched passes (attn_flash_t2): K/V read once per pair, same bits
+    this.attnTileOn = this.flash && !this.kvQ8 && attnTile !== false && 2 * (nH / nKV) * hd <= 3072 && nH / nKV <= 8;
+    this.attnTile = this.attnTileOn;
+    // attnPrefillTile: tiled causal flash attention for full-width prefill passes (engine/wgsl/attn_tile.js):
+    // one workgroup per (split, kv head, group of up to 64 query rows) instead of per column (pair).
+    // It changes the prefill summation order (tolerance, not bits) and only runs on full-width passes
+    // that are not a speculative verify (_snapNow null: prefillTokens, runHiddenBatch/embedRunBatch
+    // without snapshots); decode and verify keep attn_flash at every batchCols, so spec == plain.
+    // Default ("auto" / undefined): on for every model. Dense: 27B relDiff vs attn_flash 9.6e-5 at 16k, 2.2x
+    // prefill at 16k. MoE (on since 2026-09-27, docs/bench-log.md): it lands 4e-3..1.6e-2 from attn_flash
+    // because expert-routing near-ties amplify any summation-order change, the same size as the MoE's own
+    // batched-prefill vs token-by-token gap (2e-3..2.3e-2 at 700+ tokens in Deno); argmax, greedy text, spec == plain
+    // and split rooms are unchanged (tests/test_moe_split.js, test_prefill_opts.js). false forces attn_flash.
+    // The kernel is compiled whenever it is not explicitly false, so engine.attnPrefillTile can be flipped
+    // at runtime for A/B runs.
+    const aptOn = attnPrefillTile !== false;
+    this.attnPTCfg = this.flash && !this.kvQ8 && attnPrefillTile !== false
+      ? attnTileConfig({ hd, G: nH / nKV, faSplit: this.faSplit, faSplits: this.faSplits,
+        wgMem: device.limits.maxComputeWorkgroupStorageSize, target: attnPrefillSplits, tk: attnPrefillTK }) : null;
+    // fused attention glue (qsplit + q/k head_norm + rope in one dispatch, bit-identical); its
+    // staging array holds one 256-wide head. engine.attnGlue = false restores the five dispatches.
+    this.attnGlueOn = attnGlue !== false && hd <= 256;
+    this.attnGlue = this.attnGlueOn;
+    // dn_delta + dn_gatenorm in one dispatch for decode (bit-identical); engine.dnFuse = false for A/B
+    this.dnFuse = dnFuse !== false;
+    // Merged projection GEMVs (docs/research/kernels-next-2026-09.md D5): at load, the DeltaNet
+    // [qkv | z] and [beta | alpha] weights and the attention [k | v] weights are row-concatenated
+    // into one matrix each (and the MoE router with the shared-expert gate), so one GEMV launch
+    // replaces two. Every row keeps its kernel, its reduction order and its full/tail branch, so
+    // the output is bit-identical (see _fuseW). The per-tensor ops still exist over the same
+    // memory: engine.fuseProj = false switches back at runtime for A/B; fuseProj: false at create
+    // keeps the old separate buffers entirely. Only for the coop GEMV ladder.
+    this.fuseProjOn = fuseProj !== false && matvecVariant === "coop";
+    this.fuseProj = this.fuseProjOn;
+    // batched attention for verify / prefill passes (one dispatch per stage for all columns instead
+    // of three per column; bit-identical, needs the workgroup softmax). engine.attnMC = false for A/B.
+    this.attnMCOn = attnMC !== false && this.softmaxWG;
+    this.attnMC = this.attnMCOn;
+    const [lo, hi] = layerRange;
+    this.lo = lo; this.hi = hi;
+    this.hasEmbed = hasEmbed; this.hasHead = hasHead;
+    this.pos = 0;
+
+    // ---- prefill GEMM plan (docs/research/prefill-gemm-v2.md) ----
+    // Only at the full batch width, only for Q4 weights, only for shapes with a
+    // pinned split-K factor. Narrower passes (decode, speculative verify, the
+    // prompt tail) stay on the GEMV ladder, so the speculative stream is
+    // structurally identical to plain decoding.
+    this._gemmShapes = new Map();
+    if (batchCols >= 16 && gemm !== false) {
+      for (const [dOut, dIn] of [[convDim, dim], [dInner, dim], [dim, dInner], [inter, dim], [dim, inter],
+                                 [nH * hd * 2, dim], [kvDim, dim], [dim, qDim]]) {
+        const S = GEMM_S[`${dOut}x${dIn}`];
+        if (S && dOut >= 256 && dIn % 64 === 0 && ((dIn / 32) / 2) % S === 0) this._gemmShapes.set(`${dOut}x${dIn}`, S);
+      }
+    }
+    // Q8_0 tensors with a pinned shape get the Q8 GEMM (engine/wgsl/gemm.js kernel8): in the real
+    // 27B these are ffn_down, ssm_out and attn_output, ~40% of a DeltaNet layer's bytes
+    this._gemm8Pairs = [];
+    if (this._gemmShapes.size && gemm8 !== false) {
+      const q8keys = new Set();
+      const note = (e, dOut, dIn) => { if (e && e.kind === "q8") q8keys.add(`${dOut}x${dIn}`); };
+      for (const L of [...weights.layers, ...(weights.mtp ? [weights.mtp.layer] : [])]) {
+        note(L.ffnDown, dim, inter); note(L.wOut, dim, dInner); note(L.wo, dim, qDim);
+      }
+      for (const k of q8keys) {
+        const S = this._gemmShapes.get(k), dIn = +k.split("x")[1];
+        if (S && ((dIn / 32) / 2) % S === 0) this._gemm8Pairs.push([dIn, S]);
+      }
+    }
+    this._gemm8Set = new Set(this._gemm8Pairs.map(([dIn, S]) => `${dIn}:${S}`));
+    this.gemmOn = this._gemmShapes.size > 0;
+    // A verify pass exactly NC columns wide would go through the prefill GEMM (_encodeLayerBatch
+    // and _dop pick it by width), whose sums differ from the GEMV twins that plain decoding matches
+    // (prefill tolerance, not bit-identical). A 15-draft lookup run at NC=16 was such a pass, so
+    // cap the run one short of that: every verify stays on the GEMV ladder and spec == plain holds
+    // by construction. Drafts only: no kernel changes, a copy run just verifies 14 at a time.
+    // Only when the longest run is exactly one short of NC (NC = 8, 16): at NC = 4 the runs are
+    // up to 7 and a cap of 2 would gut lookup, so NC = 4 keeps its old limit.
+    if (this.gemmOn && this.maxDrafts === batchCols - 1) this.maxDrafts = batchCols - 2;
+    this._gemmDIns = [...new Set([...this._gemmShapes.keys()].map((k) => +k.split("x")[1]))];
+    this._gemmSplits = [...new Set(this._gemmShapes.values())];
+    this._gemmPairs = [...new Set([...this._gemmShapes].map(([k, S]) => `${k.split("x")[1]}:${S}`))].map((x) => x.split(":").map(Number));
+    this.gemm = this.gemmOn;   // runtime kill switch: engine.gemm = false reproduces the GEMV path
+    // Expert-grouped MoE prefill (engine/wgsl/moe_group.js, _prefillGrouped; candidate D of
+    // docs/research/prefill-profile-2026-09.md). moeGroupPrefill = U > 0: prompt prefill runs in
+    // layer-major ubatches of U tokens (a multiple of batchCols, at least two passes), the last one cut to the
+    // remaining whole passes (if at least two); under two passes' worth goes the ordinary way. Each layer's
+    // attention / DeltaNet part runs as the usual batchCols-wide passes; the MoE FFN of all U tokens is
+    // sorted by expert and each chosen expert's rows are streamed once per chunk of up to moeGroupUC
+    // (column, slot) pairs instead of once per pair. moeGroupTiled (the default when moeGroupPrefill is set)
+    // runs real per-expert tiles: experts 3x faster, MoE prefill +23..38% on the GB10, but its logits drift
+    // from the per-pass path (1.7e-2 at 700 tokens, argmax/greedy equal; the MoE prefill tolerance is 2e-2,
+    // see attnPrefillTile). Default (undefined): 256 on a MoE engine whose kernels allow it, silently off
+    // otherwise; an explicit value warns when it cannot be used. moeGroupTiled: false keeps the per-pair arithmetic (bit-identical
+    // to the per-pass path, but slower than it at every UC; kept only as a reference).
+    // engine.moeGroup = false at runtime restores the per-pass path.
+    // Decode, speculative verify and the prompt tail (under 2 * batchCols tokens) never use it.
+    this.moeGrpU = 0; this.moeGrpUC = 0;
+    {
+      const auto = moeGroupPrefill === undefined || moeGroupPrefill === "auto";
+      const gU = auto ? (this.moe && hasEmbed && lo === 0 ? MOE_PREFILL_UBATCH : 0) : Math.floor(+moeGroupPrefill) || 0, UC = Math.floor(+moeGroupUC) || 8, R = dnGroupRows(UC);
+      const why = gU <= 0 ? null : !this.moeFuse ? "needs the fused MoE FFN (moeFuse)" : !this.flash ? "needs flash attention"
+        : gU % batchCols || gU < 2 * batchCols ? `ubatch ${gU} is not a multiple of batchCols ${batchCols} (at least 2 passes)`
+        : ![1, 2, 4, 8, 16].includes(UC) ? `moeGroupUC ${UC} is not 1, 2, 4, 8 or 16`
+        : moeGroupTiled && UC > 8 ? `moeGroupUC ${UC}: the tiled kernels take at most 8`
+        : !moeGroupTiled && UC * R * 64 * 4 > Math.min(16384, device.limits.maxComputeWorkgroupStorageSize) - 16 ? `moeGroupUC ${UC} x ${R} down rows exceed workgroup memory`
+        : gU * (this.moe.K + 1) * dim * 4 > device.limits.maxStorageBufferBindingSize ? `ubatch ${gU} expert outputs exceed the storage-binding limit`
+        : gU > device.limits.maxComputeWorkgroupsPerDimension
+          || moeGroupSizes({ U: gU, K: this.moe.K, nExp: this.moe.nExp, UC }).maxChunks > device.limits.maxComputeWorkgroupsPerDimension
+          ? `ubatch ${gU} exceeds the dispatch limit (an over-limit indirect dispatch would silently do nothing)` : "";
+      if (why && !auto) console.warn(`moeGroupPrefill ${gU} off: ${why}`);
+      else if (why === "") { this.moeGrpU = gU; this.moeGrpUC = UC; this.moeGrpTiled = !!moeGroupTiled; }
+    }
+    this.moeGroup = this.moeGrpU > 0;   // runtime kill switch
+
+    // ---- wide prefill (docs/research/prefill-profile-2026-09.md candidate B) ----
+    // prefillUbatch = U > 0: prefillTokens runs chunks of up to U prompt tokens (multiples of the tile
+    // width BN) through _encodeLayerWide: every Q4_0 / Q8_0 projection is ONE tiled GEMM over the
+    // whole chunk (engine/wgsl/gemm_wide.js); the DeltaNet recurrence, attention and MoE experts run
+    // on the existing batchCols-wide kernels, sub-batch by sub-batch. Prefill-tolerance numerics (a
+    // different summation order); decode and verify never use it. Default (undefined): 256 on a MoE
+    // engine that holds the embedding (the MoE prefill tolerance, see attnPrefillTile; its 64x64 tile
+    // fits the 16 KB default workgroup memory), off on dense models (27B gain is smaller; kept opt-in).
+    // An automatic setting that cannot be used here is silently off; an explicit one warns.
+    // engine.prefillWide = false switches it off at runtime. prefillTile: { BM, BN, TM, TN, KB } overrides the tile.
+    this.ubatch = 0; this.wideCfg = null;
+    const ubAuto = prefillUbatch === undefined || prefillUbatch === "auto";
+    const UB = ubAuto ? (this.moe && hasEmbed && lo === 0 ? MOE_PREFILL_UBATCH : 0) : Math.floor(+prefillUbatch || 0);
+    if (UB > 0) {
+      let why = null, cfg = null;
+      try { cfg = wideTileConfig(prefillTile, device.limits.maxComputeWorkgroupStorageSize); } catch (e) { why = e.message; }
+      const qk = (e) => !!e && (e.kind === "q4" || e.kind === "q8");
+      const projOK = (L) => L.isFull ? [L.wq, L.wk, L.wv, L.wo].every(qk) : [L.wqkv, L.wz, L.wOut].every(qk);
+      const ffnOK = (L) => !!L.moe || [L.ffnGate, L.ffnUp, L.ffnDown].every(qk);
+      if (why) { /* tile config error */ }
+      else if (UB > device.limits.maxComputeWorkgroupsPerDimension) why = `it exceeds the dispatch limit ${device.limits.maxComputeWorkgroupsPerDimension}`
+      else if (UB % cfg.BN || cfg.BN % batchCols) why = `it must be a multiple of the tile width ${cfg.BN}, which batchCols (${batchCols}) must divide`;
+      else if (!this.flash) why = "it needs the flash-attention path";
+      else if (!hasEmbed || lo !== 0) why = "it needs the embedding (whole-model prefill)";
+      else if ([dim, dInner, qDim, ...(weights.layers.some((L) => !L.moe) ? [inter] : [])].some((d) => d % cfg.KS)) why = `a projection width is not a multiple of ${cfg.KS}`;
+      else if (!weights.layers.every((L) => projOK(L) && ffnOK(L))) why = "a projection is not Q4_0 / Q8_0";
+      if (why) { if (!ubAuto) console.warn(`prefillUbatch ${UB}: wide prefill off (${why})`); }
+      else { this.ubatch = UB; this.wideCfg = cfg; }
+    }
+    this.prefillWide = this.ubatch > 0;
+
+    // prefill GEMM operand precision (see PREFILL_MATH above). _pmAvail: the modes built for this
+    // engine; engine.prefillMath can be switched at runtime among them (A/B), anything else runs f32.
+    let pm = prefillMath ?? envPrefillMath() ?? "f32";
+    if (!PREFILL_MATH.includes(pm)) { console.warn(`prefillMath "${pm}" unknown (${PREFILL_MATH.join(" | ")}): using f32`); pm = "f32"; }
+    this.prefillMathReq = pm;
+    this._pmAvail = { f32: true, f16: false, sgmatrix: false };
+    this._pmR16 = this.gemmOn && pm === "f16";
+    this.sgmWhy = pm !== "f32" && !this.gemmOn ? "no prefill GEMM on this engine (batchCols < 16, gemm: false, or no GEMM shapes)" : "";
+
+    // ---- pipelines with explicit layouts ----
+    const unpack = await probeUnpack(device);
+    const mod = device.createShaderModule({ code: WGSL + coopWGSL(coopWG, coopRows, 64, batchCols, coopRowsB, unpack)
+      + (this.moe ? moeWGSL(this.moeK) : "")
+      + (this.moeFuse ? moeFusedWGSL({ K: this.moe.K, R: this.moe.R, gu: this.moe.guPairs.map((p) => p.split("_")), dn: this.moe.dnPairs.map((p) => p.split("_")) }) : "")
